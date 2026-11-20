@@ -128,6 +128,27 @@ func isExternalHelmChart(source v1alpha1.ApplicationSource) bool {
 	return false
 }
 
+func requiresPackagingForSameRepoValueFileRef(source v1alpha1.ApplicationSource, refs []v1alpha1.ApplicationSource) bool {
+	if source.Helm == nil {
+		return false
+	}
+
+	for _, valueFile := range source.Helm.ValueFiles {
+		refName, _, err := splitRefFromPath(valueFile)
+		if err != nil {
+			continue
+		}
+
+		for _, ref := range refs {
+			if ref.Ref == refName && pkg.AreSameRepos(source.RepoURL, ref.RepoURL) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // appInstanceName returns the app instance name exactly as Argo CD records it in
 // resource tracking ids. Under apps-in-any-namespace an Application living outside
 // the Argo CD controller namespace is qualified as `<appNamespace>_<appName>`, so
@@ -314,12 +335,16 @@ func (a *ArgoClient) generateManifests(ctx context.Context, app v1alpha1.Applica
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to get repo")
 		}
-
-		if a.cfg.ArgoCDSendFullRepository {
+		if a.cfg.ArgoCDSendFullRepository && !requiresPackagingForSameRepoValueFileRef(source, refs) {
 			log.Debug().Caller().Str("app", app.Name).Msg("sending full repository")
 			packageDir = repo.Directory
 		} else {
+			if a.cfg.ArgoCDSendFullRepository {
+				log.Debug().Caller().Str("app", app.Name).
+					Msg("packaging app because same-repository Helm value file references cannot use streamed revisions")
+			}
 			log.Debug().Caller().Str("app", app.Name).Msg("packaging app")
+			source = cloneSourceForPackaging(source)
 			packageDir, err = packageApp(ctx, source, refs, repo, getRepo)
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to package application")
@@ -583,6 +608,15 @@ func parseChartYAML(chartPath string) ([]struct {
 
 // packageApp packages an Argo CD application source and its dependencies into a temporary directory.
 // It copies the source files and processes both Kustomize and Helm dependencies.
+func cloneSourceForPackaging(source v1alpha1.ApplicationSource) v1alpha1.ApplicationSource {
+	if source.Helm != nil {
+		helm := *source.Helm
+		helm.ValueFiles = append([]string(nil), source.Helm.ValueFiles...)
+		source.Helm = &helm
+	}
+	return source
+}
+
 func packageApp(
 	ctx context.Context,
 	source v1alpha1.ApplicationSource,
