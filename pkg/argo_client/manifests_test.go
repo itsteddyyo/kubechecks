@@ -112,6 +112,71 @@ func TestIsExternalHelmChart(t *testing.T) {
 	}
 }
 
+func TestRequiresPackagingForSameRepoValueFileRef(t *testing.T) {
+	source := v1alpha1.ApplicationSource{
+		RepoURL: "git@github.com:org/repo.git",
+		Helm: &v1alpha1.ApplicationSourceHelm{
+			ValueFiles: []string{"$values/env/values.yaml"},
+		},
+	}
+
+	testCases := map[string]struct {
+		source   v1alpha1.ApplicationSource
+		refs     []v1alpha1.ApplicationSource
+		expected bool
+	}{
+		"same-repository-reference": {
+			source: source,
+			refs: []v1alpha1.ApplicationSource{{
+				Ref:     "values",
+				RepoURL: "https://github.com/org/repo.git",
+			}},
+			expected: true,
+		},
+		"different-repository-reference": {
+			source: source,
+			refs: []v1alpha1.ApplicationSource{{
+				Ref:     "values",
+				RepoURL: "https://github.com/org/other.git",
+			}},
+		},
+		"unreferenced-same-repository": {
+			source: source,
+			refs: []v1alpha1.ApplicationSource{{
+				Ref:     "other",
+				RepoURL: "git@github.com:org/repo.git",
+			}},
+		},
+		"not-a-valid-reference": {
+			source: v1alpha1.ApplicationSource{
+				RepoURL: "git@github.com:org/repo.git",
+				Helm: &v1alpha1.ApplicationSourceHelm{
+					ValueFiles: []string{"$values"},
+				},
+			},
+			refs: []v1alpha1.ApplicationSource{{
+				Ref:     "values",
+				RepoURL: "git@github.com:org/repo.git",
+			}},
+		},
+		"no-helm-source": {
+			source: v1alpha1.ApplicationSource{
+				RepoURL: "git@github.com:org/repo.git",
+			},
+			refs: []v1alpha1.ApplicationSource{{
+				Ref:     "values",
+				RepoURL: "git@github.com:org/repo.git",
+			}},
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, requiresPackagingForSameRepoValueFileRef(tc.source, tc.refs))
+		})
+	}
+}
+
 func TestAreSameTargetRef(t *testing.T) {
 	testcases := map[string]struct {
 		ref1, ref2 string
@@ -264,6 +329,20 @@ func TestCopyFile(t *testing.T) {
 	})
 }
 
+func TestCloneSourceForPackagingDoesNotMutateOriginalValueFiles(t *testing.T) {
+	source := v1alpha1.ApplicationSource{
+		Helm: &v1alpha1.ApplicationSourceHelm{
+			ValueFiles: []string{"$values/values.yaml"},
+		},
+	}
+
+	packagingSource := cloneSourceForPackaging(source)
+	packagingSource.Helm.ValueFiles[0] = "../../.refs/values/values.yaml"
+
+	assert.Equal(t, []string{"$values/values.yaml"}, source.Helm.ValueFiles)
+	assert.Equal(t, []string{"../../.refs/values/values.yaml"}, packagingSource.Helm.ValueFiles)
+}
+
 type repoTarget struct {
 	repo, target string
 }
@@ -362,6 +441,46 @@ version: 1.0.0`,
 				"app1/Chart.yaml":         {"git@github.com:testuser/testrepo.git", "main", "app1/Chart.yaml"},
 				"app1/values.yaml":        {"git@github.com:testuser/testrepo.git", "main", "app1/values.yaml"},
 				".refs/staging/base.yaml": {"git@github.com:testuser/otherrepo.git", "main", "base.yaml"},
+			},
+		},
+
+		"same-repository-value-reference-is-copied": {
+			app: v1alpha1.Application{
+				Spec: v1alpha1.ApplicationSpec{
+					Sources: []v1alpha1.ApplicationSource{
+						{
+							RepoURL:        "git@github.com:testuser/testrepo.git",
+							Path:           "app1/",
+							TargetRevision: "main",
+							Helm: &v1alpha1.ApplicationSourceHelm{
+								ValueFiles: []string{"$values/shared/values.yaml"},
+							},
+						},
+						{
+							Ref:            "values",
+							RepoURL:        "https://github.com/testuser/testrepo.git",
+							TargetRevision: "main",
+						},
+					},
+				},
+			},
+			filesByRepo: map[repoTarget]set[string]{
+				repoTarget{"git@github.com:testuser/testrepo.git", "main"}: newSet[string](
+					"app1/Chart.yaml",
+					"shared/values.yaml",
+				),
+			},
+			filesByRepoWithContent: map[repoTarget]map[string]string{
+				repoTarget{"git@github.com:testuser/testrepo.git", "main"}: {
+					"app1/Chart.yaml": `apiVersion: v2
+name: test-chart
+version: 1.0.0`,
+					"shared/values.yaml": "replicas: 2",
+				},
+			},
+			expectedFiles: map[string]repoTargetPath{
+				"app1/Chart.yaml":                 {"git@github.com:testuser/testrepo.git", "main", "app1/Chart.yaml"},
+				".refs/values/shared/values.yaml": {"git@github.com:testuser/testrepo.git", "main", "shared/values.yaml"},
 			},
 		},
 
