@@ -112,51 +112,67 @@ func TestIsExternalHelmChart(t *testing.T) {
 	}
 }
 
-func TestRequiresPackagingForSameRepoValueFileRef(t *testing.T) {
+func TestRewriteSameRepoValueFileRefs(t *testing.T) {
 	source := v1alpha1.ApplicationSource{
-		RepoURL: "git@github.com:org/repo.git",
+		RepoURL:        "git@github.com:org/repo.git",
+		Path:           "apps/first/",
+		TargetRevision: "main",
 		Helm: &v1alpha1.ApplicationSourceHelm{
 			ValueFiles: []string{"$values/env/values.yaml"},
 		},
 	}
 
 	testCases := map[string]struct {
-		source   v1alpha1.ApplicationSource
-		refs     []v1alpha1.ApplicationSource
-		expected bool
+		source            v1alpha1.ApplicationSource
+		refs              []v1alpha1.ApplicationSource
+		expectedValueFile string
 	}{
 		"same-repository-reference": {
 			source: source,
 			refs: []v1alpha1.ApplicationSource{{
-				Ref:     "values",
-				RepoURL: "https://github.com/org/repo.git",
+				Ref:            "values",
+				RepoURL:        "https://github.com/org/repo.git",
+				TargetRevision: "main",
 			}},
-			expected: true,
+			expectedValueFile: "../../env/values.yaml",
 		},
 		"different-repository-reference": {
 			source: source,
 			refs: []v1alpha1.ApplicationSource{{
-				Ref:     "values",
-				RepoURL: "https://github.com/org/other.git",
+				Ref:            "values",
+				RepoURL:        "https://github.com/org/other.git",
+				TargetRevision: "main",
+			}},
+		},
+		"different-revision-reference": {
+			source: source,
+			refs: []v1alpha1.ApplicationSource{{
+				Ref:            "values",
+				RepoURL:        "git@github.com:org/repo.git",
+				TargetRevision: "staging",
 			}},
 		},
 		"unreferenced-same-repository": {
 			source: source,
 			refs: []v1alpha1.ApplicationSource{{
-				Ref:     "other",
-				RepoURL: "git@github.com:org/repo.git",
+				Ref:            "other",
+				RepoURL:        "git@github.com:org/repo.git",
+				TargetRevision: "main",
 			}},
 		},
 		"not-a-valid-reference": {
 			source: v1alpha1.ApplicationSource{
-				RepoURL: "git@github.com:org/repo.git",
+				RepoURL:        "git@github.com:org/repo.git",
+				Path:           "apps/first/",
+				TargetRevision: "main",
 				Helm: &v1alpha1.ApplicationSourceHelm{
 					ValueFiles: []string{"$values"},
 				},
 			},
 			refs: []v1alpha1.ApplicationSource{{
-				Ref:     "values",
-				RepoURL: "git@github.com:org/repo.git",
+				Ref:            "values",
+				RepoURL:        "git@github.com:org/repo.git",
+				TargetRevision: "main",
 			}},
 		},
 		"no-helm-source": {
@@ -172,7 +188,22 @@ func TestRequiresPackagingForSameRepoValueFileRef(t *testing.T) {
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tc.expected, requiresPackagingForSameRepoValueFileRef(tc.source, tc.refs))
+			var originalValueFiles []string
+			if tc.source.Helm != nil {
+				originalValueFiles = append([]string(nil), tc.source.Helm.ValueFiles...)
+			}
+
+			rewritten, err := rewriteSameRepoValueFileRefs(tc.source, tc.refs)
+			require.NoError(t, err)
+			if tc.expectedValueFile != "" {
+				require.NotNil(t, rewritten.Helm)
+				assert.Equal(t, tc.expectedValueFile, rewritten.Helm.ValueFiles[0])
+			} else if tc.source.Helm != nil {
+				assert.Equal(t, tc.source.Helm.ValueFiles, rewritten.Helm.ValueFiles)
+			}
+			if tc.source.Helm != nil {
+				assert.Equal(t, originalValueFiles, tc.source.Helm.ValueFiles)
+			}
 		})
 	}
 }
@@ -329,14 +360,14 @@ func TestCopyFile(t *testing.T) {
 	})
 }
 
-func TestCloneSourceForPackagingDoesNotMutateOriginalValueFiles(t *testing.T) {
+func TestCloneSourceWithIndependentValueFilesDoesNotMutateOriginal(t *testing.T) {
 	source := v1alpha1.ApplicationSource{
 		Helm: &v1alpha1.ApplicationSourceHelm{
 			ValueFiles: []string{"$values/values.yaml"},
 		},
 	}
 
-	packagingSource := cloneSourceForPackaging(source)
+	packagingSource := cloneSourceWithIndependentValueFiles(source)
 	packagingSource.Helm.ValueFiles[0] = "../../.refs/values/values.yaml"
 
 	assert.Equal(t, []string{"$values/values.yaml"}, source.Helm.ValueFiles)
