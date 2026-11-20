@@ -389,6 +389,7 @@ func TestPackageApp(t *testing.T) {
 		filesByRepo            map[repoTarget]set[string]
 		filesByRepoWithContent map[repoTarget]map[string]string
 		expectedFiles          map[string]repoTargetPath
+		expectedValueFiles     []string
 	}{
 		"unused-paths-are-ignored": {
 			app: v1alpha1.Application{
@@ -513,6 +514,7 @@ version: 1.0.0`,
 				"app1/Chart.yaml":                 {"git@github.com:testuser/testrepo.git", "main", "app1/Chart.yaml"},
 				".refs/values/shared/values.yaml": {"git@github.com:testuser/testrepo.git", "main", "shared/values.yaml"},
 			},
+			expectedValueFiles: []string{"../.refs/values/shared/values.yaml"},
 		},
 
 		"refs-are-copied": {
@@ -770,8 +772,13 @@ dependencies:
 			require.NoError(t, err)
 
 			// FUNCTION UNDER TEST: package the app
-			path, err := packageApp(ctx, source, refs, repo, getRepo)
+			path, packagedSource, err := packageApp(ctx, source, refs, repo, getRepo)
 			require.NoError(t, err)
+			if tc.expectedValueFiles != nil {
+				require.NotNil(t, packagedSource.Helm)
+				assert.Equal(t, tc.expectedValueFiles, packagedSource.Helm.ValueFiles)
+				assert.Equal(t, []string{"$values/shared/values.yaml"}, source.Helm.ValueFiles)
+			}
 
 			// ensure that only the expected files were copied
 			actualFiles := makeRelPathFilesSet(t, path)

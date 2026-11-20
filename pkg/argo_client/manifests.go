@@ -360,7 +360,7 @@ func (a *ArgoClient) generateManifests(ctx context.Context, app v1alpha1.Applica
 			packageDir = repo.Directory
 		} else {
 			log.Debug().Caller().Str("app", app.Name).Msg("packaging app")
-			packageDir, err = packageApp(ctx, source, refs, repo, getRepo)
+			packageDir, source, err = packageApp(ctx, source, refs, repo, getRepo)
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to package application")
 			}
@@ -638,12 +638,12 @@ func packageApp(
 	refs []v1alpha1.ApplicationSource,
 	repo *git.Repo,
 	getRepo getRepo,
-) (string, error) {
+) (string, v1alpha1.ApplicationSource, error) {
 	source = cloneSourceWithIndependentValueFiles(source)
 
 	destDir, err := os.MkdirTemp("", "package-*")
 	if err != nil {
-		return "", errors.Wrap(err, "failed to make temp dir")
+		return "", source, errors.Wrap(err, "failed to make temp dir")
 	}
 
 	fsIface := filesys.MakeFsOnDisk()
@@ -654,7 +654,7 @@ func packageApp(
 
 	// First copy the entire source directory
 	if err := copyDir(fsIface, srcAppPath, destAppDir); err != nil {
-		return "", errors.Wrap(err, "failed to copy base directory")
+		return "", source, errors.Wrap(err, "failed to copy base directory")
 	}
 
 	// Process kustomization dependencies
@@ -663,12 +663,12 @@ func packageApp(
 	if fsIface.Exists(absKustPath) {
 		files, _, err := kustomize.ProcessKustomizationFile(sourceFS, relKustPath)
 		if err != nil {
-			return "", errors.Wrap(err, "failed to process kustomization dependencies")
+			return "", source, errors.Wrap(err, "failed to process kustomization dependencies")
 		}
 		for _, file := range files {
 			err := addFile(repo.Directory, destDir, file)
 			if err != nil {
-				return "", errors.Wrap(err, "failed to add file")
+				return "", source, errors.Wrap(err, "failed to add file")
 			}
 		}
 	}
@@ -681,14 +681,14 @@ func packageApp(
 			log.Debug().Caller().Str("chartPath", chartPath).Msg("processing helm dependencies")
 			deps, err := parseChartYAML(chartPath)
 			if err != nil {
-				return "", errors.Wrap(err, "failed to parse Chart.yaml")
+				return "", source, errors.Wrap(err, "failed to parse Chart.yaml")
 			}
 
 			for _, dep := range deps {
 				if strings.HasPrefix(dep.Repository, "file://") {
 					log.Debug().Caller().Str("chartPath", chartPath).Msgf("processing local helm dependency %s", dep.Repository)
 					if err := processLocalHelmDependency(srcAppPath, destAppDir, dep.Repository); err != nil {
-						return "", errors.Wrapf(err, "failed to process local helm dependency %s", dep.Name)
+						return "", source, errors.Wrapf(err, "failed to process local helm dependency %s", dep.Name)
 					}
 				}
 			}
@@ -703,7 +703,7 @@ func packageApp(
 			if strings.HasPrefix(valueFile, "$") {
 				relPath, err := processValueReference(ctx, source, valueFile, refsByName, repo, getRepo, destDir, destAppDir)
 				if err != nil {
-					return "", err
+					return "", source, err
 				}
 
 				source.Helm.ValueFiles[index] = relPath
@@ -716,14 +716,14 @@ func packageApp(
 
 			if containsGlob(valueFile) {
 				if err := copyGlobValueFiles(repo.Directory, destDir, srcAppPath, destAppDir, source, valueFile); err != nil {
-					return "", err
+					return "", source, err
 				}
 				continue
 			}
 
 			relPath, err := filepath.Rel(source.Path, valueFile)
 			if err != nil {
-				return "", errors.Wrap(err, "failed to calculate relative path")
+				return "", source, errors.Wrap(err, "failed to calculate relative path")
 			}
 
 			if !strings.HasPrefix(relPath, "../") {
@@ -734,13 +734,13 @@ func packageApp(
 			dst := filepath.Join(destAppDir, valueFile)
 			if err = copyFile(src, dst); err != nil {
 				if !ignoreValuesFileCopyError(source, valueFile, err) {
-					return "", errors.Wrapf(err, "failed to copy file: %q", valueFile)
+					return "", source, errors.Wrapf(err, "failed to copy file: %q", valueFile)
 				}
 			}
 		}
 	}
 
-	return destDir, nil
+	return destDir, source, nil
 }
 
 // processValueReference processes a Helm value file reference that starts with '$' and points to another source.
