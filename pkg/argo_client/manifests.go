@@ -720,12 +720,11 @@ func processValueReference(
 
 	ref, ok := refsByName[refName]
 	if !ok {
-		return "", errors.Errorf("value file %q points at missing ref %q", valueFile, refName)
+		return "", errors.Wrap(err, "value file points at missing ref")
 	}
 
 	refRepo := repo
-	if !pkg.AreSameRepos(ref.RepoURL, repo.CloneURL) ||
-		!areSameTargetRef(ref.TargetRevision, repo.BranchName) {
+	if !(pkg.AreSameRepos(ref.RepoURL, repo.CloneURL) && areSameTargetRef(ref.TargetRevision, repo.BranchName)) {
 		refRepo, err = getRepo(ctx, ref.RepoURL, ref.TargetRevision)
 		if err != nil {
 			return "", errors.Wrapf(err, "failed to clone repo: %q", ref.RepoURL)
