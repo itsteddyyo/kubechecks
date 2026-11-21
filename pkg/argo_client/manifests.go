@@ -315,6 +315,7 @@ func (a *ArgoClient) generateManifests(ctx context.Context, app v1alpha1.Applica
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to get repo")
 		}
+
 		if a.cfg.ArgoCDSendFullRepository {
 			log.Debug().Caller().Str("app", app.Name).Msg("sending full repository")
 			packageDir = repo.Directory
