@@ -131,6 +131,7 @@ func isExternalHelmChart(source v1alpha1.ApplicationSource) bool {
 func rewriteSameRepoValueFileRefs(
 	source v1alpha1.ApplicationSource,
 	refs []v1alpha1.ApplicationSource,
+	pullRequest vcs.PullRequest,
 ) (v1alpha1.ApplicationSource, error) {
 	if source.Helm == nil {
 		return source, nil
@@ -146,8 +147,15 @@ func rewriteSameRepoValueFileRefs(
 		for _, ref := range refs {
 			if ref.Ref != refName ||
 				!pkg.AreSameRepos(source.RepoURL, ref.RepoURL) ||
-				!areSameTargetRef(source.TargetRevision, ref.TargetRevision) ||
 				refPath == "" {
+				continue
+			}
+
+			sameTargetRevision := areSameTargetRef(source.TargetRevision, ref.TargetRevision)
+			pullRequestTargetRevision := pkg.AreSameRepos(source.RepoURL, pullRequest.CloneURL) &&
+				areSameTargetRef(source.TargetRevision, pullRequest.BaseRef) &&
+				areSameTargetRef(ref.TargetRevision, pullRequest.HeadRef)
+			if !sameTargetRevision && !pullRequestTargetRevision {
 				continue
 			}
 
@@ -352,7 +360,7 @@ func (a *ArgoClient) generateManifests(ctx context.Context, app v1alpha1.Applica
 			return nil, errors.Wrap(err, "failed to get repo")
 		}
 		if a.cfg.ArgoCDSendFullRepository {
-			source, err = rewriteSameRepoValueFileRefs(source, refs)
+			source, err = rewriteSameRepoValueFileRefs(source, refs, pullRequest)
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to rewrite same-repository Helm value file references")
 			}

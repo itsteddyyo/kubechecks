@@ -125,6 +125,7 @@ func TestRewriteSameRepoValueFileRefs(t *testing.T) {
 	testCases := map[string]struct {
 		source            v1alpha1.ApplicationSource
 		refs              []v1alpha1.ApplicationSource
+		pullRequest       vcs.PullRequest
 		expectedValueFile string
 	}{
 		"same-repository-reference": {
@@ -134,6 +135,20 @@ func TestRewriteSameRepoValueFileRefs(t *testing.T) {
 				RepoURL:        "https://github.com/org/repo.git",
 				TargetRevision: "main",
 			}},
+			expectedValueFile: "../../env/values.yaml",
+		},
+		"pull-request-same-repository-reference": {
+			source: source,
+			refs: []v1alpha1.ApplicationSource{{
+				Ref:            "values",
+				RepoURL:        "https://github.com/org/repo.git",
+				TargetRevision: "feature",
+			}},
+			pullRequest: vcs.PullRequest{
+				CloneURL: "git@github.com:org/repo.git",
+				BaseRef:  "main",
+				HeadRef:  "feature",
+			},
 			expectedValueFile: "../../env/values.yaml",
 		},
 		"different-repository-reference": {
@@ -193,7 +208,7 @@ func TestRewriteSameRepoValueFileRefs(t *testing.T) {
 				originalValueFiles = append([]string(nil), tc.source.Helm.ValueFiles...)
 			}
 
-			rewritten, err := rewriteSameRepoValueFileRefs(tc.source, tc.refs)
+			rewritten, err := rewriteSameRepoValueFileRefs(tc.source, tc.refs, tc.pullRequest)
 			require.NoError(t, err)
 			if tc.expectedValueFile != "" {
 				require.NotNil(t, rewritten.Helm)
