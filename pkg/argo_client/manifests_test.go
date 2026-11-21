@@ -208,7 +208,8 @@ func TestRewriteSameRepoValueFileRefs(t *testing.T) {
 				originalValueFiles = append([]string(nil), tc.source.Helm.ValueFiles...)
 			}
 
-			rewritten, err := rewriteSameRepoValueFileRefs(tc.source, tc.refs, tc.pullRequest)
+			source := cloneSourceWithIndependentValueFiles(tc.source)
+			rewritten, err := rewriteSameRepoValueFileRefs(source, tc.refs, tc.pullRequest)
 			require.NoError(t, err)
 			if tc.expectedValueFile != "" {
 				require.NotNil(t, rewritten.Helm)
@@ -272,7 +273,11 @@ func TestPreprocessSources(t *testing.T) {
 	t.Run("one source", func(t *testing.T) {
 		app := &v1alpha1.Application{
 			Spec: v1alpha1.ApplicationSpec{
-				Source: &v1alpha1.ApplicationSource{},
+				Source: &v1alpha1.ApplicationSource{
+					Helm: &v1alpha1.ApplicationSourceHelm{
+						ValueFiles: []string{"values.yaml"},
+					},
+				},
 			},
 		}
 		pr := vcs.PullRequest{}
@@ -280,12 +285,18 @@ func TestPreprocessSources(t *testing.T) {
 		sources, refs := preprocessSources(app, pr)
 		assert.Len(t, sources, 1)
 		assert.Len(t, refs, 0)
+		sources[0].Helm.ValueFiles[0] = "rewritten.yaml"
+		assert.Equal(t, "values.yaml", app.Spec.Source.Helm.ValueFiles[0])
 	})
 
 	t.Run("one multisource", func(t *testing.T) {
 		app := &v1alpha1.Application{
 			Spec: v1alpha1.ApplicationSpec{
-				Sources: []v1alpha1.ApplicationSource{{}},
+				Sources: []v1alpha1.ApplicationSource{{
+					Helm: &v1alpha1.ApplicationSourceHelm{
+						ValueFiles: []string{"values.yaml"},
+					},
+				}},
 			},
 		}
 		pr := vcs.PullRequest{}
@@ -293,6 +304,8 @@ func TestPreprocessSources(t *testing.T) {
 		sources, refs := preprocessSources(app, pr)
 		assert.Len(t, sources, 1)
 		assert.Len(t, refs, 0)
+		sources[0].Helm.ValueFiles[0] = "rewritten.yaml"
+		assert.Equal(t, "values.yaml", app.Spec.Sources[0].Helm.ValueFiles[0])
 	})
 
 	t.Run("one source, one ref, needs targetrev transform", func(t *testing.T) {
@@ -816,6 +829,10 @@ dependencies:
 			sources, refs := preprocessSources(&tc.app, tc.pullRequest)
 			require.Len(t, sources, 1)
 			source := sources[0]
+			var originalValueFiles []string
+			if source.Helm != nil {
+				originalValueFiles = append([]string(nil), source.Helm.ValueFiles...)
+			}
 
 			// get repos from the map, but nowhere else
 			getRepo := func(ctx context.Context, cloneURL, branchName string) (*git.Repo, error) {
@@ -832,13 +849,12 @@ dependencies:
 			require.NoError(t, err)
 
 			// FUNCTION UNDER TEST: package the app
-			packagedSource := cloneSourceWithIndependentValueFiles(source)
-			path, err := packageApp(ctx, packagedSource, refs, repo, getRepo)
+			path, err := packageApp(ctx, source, refs, repo, getRepo)
 			require.NoError(t, err)
 			if tc.expectedValueFiles != nil {
-				require.NotNil(t, packagedSource.Helm)
-				assert.Equal(t, tc.expectedValueFiles, packagedSource.Helm.ValueFiles)
-				assert.Equal(t, []string{"$values/shared/values.yaml"}, source.Helm.ValueFiles)
+				require.NotNil(t, source.Helm)
+				assert.Equal(t, tc.expectedValueFiles, source.Helm.ValueFiles)
+				assert.Equal(t, originalValueFiles, tc.app.Spec.GetSource().Helm.ValueFiles)
 			}
 
 			// ensure that only the expected files were copied

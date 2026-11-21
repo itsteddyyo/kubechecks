@@ -61,10 +61,11 @@ func (a *ArgoClient) GetManifests(ctx context.Context, name string, app v1alpha1
 
 // preprocessSources splits the content sources from the ref sources, and transforms source refs that point at the pull
 // request's base into refs that point at the pull request's head. This is necessary to generate manifests based on what
-// the world will look like _after_ the branch gets merged in.
+// the world will look like _after_ the branch gets merged in. Content sources are copied so their Helm value files can
+// be rewritten without mutating the Application.
 func preprocessSources(app *v1alpha1.Application, pullRequest vcs.PullRequest) ([]v1alpha1.ApplicationSource, []v1alpha1.ApplicationSource) {
 	if !app.Spec.HasMultipleSources() {
-		return []v1alpha1.ApplicationSource{app.Spec.GetSource()}, nil
+		return []v1alpha1.ApplicationSource{cloneSourceWithIndependentValueFiles(app.Spec.GetSource())}, nil
 	}
 
 	// collect all ref sources, map by name
@@ -73,7 +74,7 @@ func preprocessSources(app *v1alpha1.Application, pullRequest vcs.PullRequest) (
 
 	for _, source := range app.Spec.Sources {
 		if source.Ref == "" {
-			contentSources = append(contentSources, source)
+			contentSources = append(contentSources, cloneSourceWithIndependentValueFiles(source))
 			continue
 		}
 
@@ -126,51 +127,6 @@ func isExternalHelmChart(source v1alpha1.ApplicationSource) bool {
 		return true
 	}
 	return false
-}
-
-func rewriteSameRepoValueFileRefs(
-	source v1alpha1.ApplicationSource,
-	refs []v1alpha1.ApplicationSource,
-	pullRequest vcs.PullRequest,
-) (v1alpha1.ApplicationSource, error) {
-	if source.Helm == nil {
-		return source, nil
-	}
-
-	source = cloneSourceWithIndependentValueFiles(source)
-	for index, valueFile := range source.Helm.ValueFiles {
-		refName, refPath, err := splitRefFromPath(valueFile)
-		if err != nil {
-			continue
-		}
-
-		for _, ref := range refs {
-			if ref.Ref != refName ||
-				!pkg.AreSameRepos(source.RepoURL, ref.RepoURL) ||
-				refPath == "" {
-				continue
-			}
-
-			sameTargetRevision := areSameTargetRef(source.TargetRevision, ref.TargetRevision)
-			pullRequestTargetRevision := pkg.AreSameRepos(source.RepoURL, pullRequest.CloneURL) &&
-				areSameTargetRef(source.TargetRevision, pullRequest.BaseRef) &&
-				areSameTargetRef(ref.TargetRevision, pullRequest.HeadRef)
-			if !sameTargetRevision && !pullRequestTargetRevision {
-				continue
-			}
-
-			appPath := filepath.Clean(filepath.FromSlash(source.Path))
-			valuePath := filepath.Clean(filepath.FromSlash(refPath))
-			relativePath, err := filepath.Rel(appPath, valuePath)
-			if err != nil {
-				return source, errors.Wrap(err, "failed to calculate same-repository value file path")
-			}
-			source.Helm.ValueFiles[index] = filepath.ToSlash(relativePath)
-			break
-		}
-	}
-
-	return source, nil
 }
 
 // appInstanceName returns the app instance name exactly as Argo CD records it in
@@ -360,15 +316,10 @@ func (a *ArgoClient) generateManifests(ctx context.Context, app v1alpha1.Applica
 			return nil, errors.Wrap(err, "failed to get repo")
 		}
 		if a.cfg.ArgoCDSendFullRepository {
-			source, err = rewriteSameRepoValueFileRefs(source, refs, pullRequest)
-			if err != nil {
-				return nil, errors.Wrap(err, "failed to rewrite same-repository Helm value file references")
-			}
 			log.Debug().Caller().Str("app", app.Name).Msg("sending full repository")
 			packageDir = repo.Directory
 		} else {
 			log.Debug().Caller().Str("app", app.Name).Msg("packaging app")
-			source = cloneSourceWithIndependentValueFiles(source)
 			packageDir, err = packageApp(ctx, source, refs, repo, getRepo)
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to package application")
