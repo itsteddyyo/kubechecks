@@ -532,6 +532,51 @@ version: 1.0.0`,
 			expectedValueFiles: []string{"../.refs/values/shared/values.yaml"},
 		},
 
+		"same-repository-different-revision-is-copied": {
+			app: v1alpha1.Application{
+				Spec: v1alpha1.ApplicationSpec{
+					Sources: []v1alpha1.ApplicationSource{
+						{
+							RepoURL:        "git@github.com:testuser/testrepo.git",
+							Path:           "app1/",
+							TargetRevision: "main",
+							Helm: &v1alpha1.ApplicationSourceHelm{
+								ValueFiles: []string{"$values/shared/values.yaml"},
+							},
+						},
+						{
+							Ref:            "values",
+							RepoURL:        "https://github.com/testuser/testrepo.git",
+							TargetRevision: "staging",
+						},
+					},
+				},
+			},
+			filesByRepo: map[repoTarget]set[string]{
+				repoTarget{"git@github.com:testuser/testrepo.git", "main"}: newSet[string](
+					"app1/Chart.yaml",
+				),
+				repoTarget{"git@github.com:testuser/testrepo.git", "staging"}: newSet[string](
+					"shared/values.yaml",
+				),
+			},
+			filesByRepoWithContent: map[repoTarget]map[string]string{
+				repoTarget{"git@github.com:testuser/testrepo.git", "main"}: {
+					"app1/Chart.yaml": `apiVersion: v2
+name: test-chart
+version: 1.0.0`,
+				},
+				repoTarget{"git@github.com:testuser/testrepo.git", "staging"}: {
+					"shared/values.yaml": "replicas: 3",
+				},
+			},
+			expectedFiles: map[string]repoTargetPath{
+				"app1/Chart.yaml":                 {"git@github.com:testuser/testrepo.git", "main", "app1/Chart.yaml"},
+				".refs/values/shared/values.yaml": {"git@github.com:testuser/testrepo.git", "staging", "shared/values.yaml"},
+			},
+			expectedValueFiles: []string{"../.refs/values/shared/values.yaml"},
+		},
+
 		"refs-are-copied": {
 			pullRequest: vcs.PullRequest{
 				CloneURL: "git@github.com:testuser/testrepo.git",
@@ -787,7 +832,8 @@ dependencies:
 			require.NoError(t, err)
 
 			// FUNCTION UNDER TEST: package the app
-			path, packagedSource, err := packageApp(ctx, source, refs, repo, getRepo)
+			packagedSource := cloneSourceWithIndependentValueFiles(source)
+			path, err := packageApp(ctx, packagedSource, refs, repo, getRepo)
 			require.NoError(t, err)
 			if tc.expectedValueFiles != nil {
 				require.NotNil(t, packagedSource.Helm)

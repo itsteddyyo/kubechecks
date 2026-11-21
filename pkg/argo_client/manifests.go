@@ -368,7 +368,8 @@ func (a *ArgoClient) generateManifests(ctx context.Context, app v1alpha1.Applica
 			packageDir = repo.Directory
 		} else {
 			log.Debug().Caller().Str("app", app.Name).Msg("packaging app")
-			packageDir, source, err = packageApp(ctx, source, refs, repo, getRepo)
+			source = cloneSourceWithIndependentValueFiles(source)
+			packageDir, err = packageApp(ctx, source, refs, repo, getRepo)
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to package application")
 			}
@@ -646,12 +647,10 @@ func packageApp(
 	refs []v1alpha1.ApplicationSource,
 	repo *git.Repo,
 	getRepo getRepo,
-) (string, v1alpha1.ApplicationSource, error) {
-	source = cloneSourceWithIndependentValueFiles(source)
-
+) (string, error) {
 	destDir, err := os.MkdirTemp("", "package-*")
 	if err != nil {
-		return "", source, errors.Wrap(err, "failed to make temp dir")
+		return "", errors.Wrap(err, "failed to make temp dir")
 	}
 
 	fsIface := filesys.MakeFsOnDisk()
@@ -662,7 +661,7 @@ func packageApp(
 
 	// First copy the entire source directory
 	if err := copyDir(fsIface, srcAppPath, destAppDir); err != nil {
-		return "", source, errors.Wrap(err, "failed to copy base directory")
+		return "", errors.Wrap(err, "failed to copy base directory")
 	}
 
 	// Process kustomization dependencies
@@ -671,12 +670,12 @@ func packageApp(
 	if fsIface.Exists(absKustPath) {
 		files, _, err := kustomize.ProcessKustomizationFile(sourceFS, relKustPath)
 		if err != nil {
-			return "", source, errors.Wrap(err, "failed to process kustomization dependencies")
+			return "", errors.Wrap(err, "failed to process kustomization dependencies")
 		}
 		for _, file := range files {
 			err := addFile(repo.Directory, destDir, file)
 			if err != nil {
-				return "", source, errors.Wrap(err, "failed to add file")
+				return "", errors.Wrap(err, "failed to add file")
 			}
 		}
 	}
@@ -689,14 +688,14 @@ func packageApp(
 			log.Debug().Caller().Str("chartPath", chartPath).Msg("processing helm dependencies")
 			deps, err := parseChartYAML(chartPath)
 			if err != nil {
-				return "", source, errors.Wrap(err, "failed to parse Chart.yaml")
+				return "", errors.Wrap(err, "failed to parse Chart.yaml")
 			}
 
 			for _, dep := range deps {
 				if strings.HasPrefix(dep.Repository, "file://") {
 					log.Debug().Caller().Str("chartPath", chartPath).Msgf("processing local helm dependency %s", dep.Repository)
 					if err := processLocalHelmDependency(srcAppPath, destAppDir, dep.Repository); err != nil {
-						return "", source, errors.Wrapf(err, "failed to process local helm dependency %s", dep.Name)
+						return "", errors.Wrapf(err, "failed to process local helm dependency %s", dep.Name)
 					}
 				}
 			}
@@ -711,7 +710,7 @@ func packageApp(
 			if strings.HasPrefix(valueFile, "$") {
 				relPath, err := processValueReference(ctx, source, valueFile, refsByName, repo, getRepo, destDir, destAppDir)
 				if err != nil {
-					return "", source, err
+					return "", err
 				}
 
 				source.Helm.ValueFiles[index] = relPath
@@ -724,14 +723,14 @@ func packageApp(
 
 			if containsGlob(valueFile) {
 				if err := copyGlobValueFiles(repo.Directory, destDir, srcAppPath, destAppDir, source, valueFile); err != nil {
-					return "", source, err
+					return "", err
 				}
 				continue
 			}
 
 			relPath, err := filepath.Rel(source.Path, valueFile)
 			if err != nil {
-				return "", source, errors.Wrap(err, "failed to calculate relative path")
+				return "", errors.Wrap(err, "failed to calculate relative path")
 			}
 
 			if !strings.HasPrefix(relPath, "../") {
@@ -742,13 +741,13 @@ func packageApp(
 			dst := filepath.Join(destAppDir, valueFile)
 			if err = copyFile(src, dst); err != nil {
 				if !ignoreValuesFileCopyError(source, valueFile, err) {
-					return "", source, errors.Wrapf(err, "failed to copy file: %q", valueFile)
+					return "", errors.Wrapf(err, "failed to copy file: %q", valueFile)
 				}
 			}
 		}
 	}
 
-	return destDir, source, nil
+	return destDir, nil
 }
 
 // processValueReference processes a Helm value file reference that starts with '$' and points to another source.
@@ -769,11 +768,12 @@ func processValueReference(
 
 	ref, ok := refsByName[refName]
 	if !ok {
-		return "", errors.Wrap(err, "value file points at missing ref")
+		return "", errors.Errorf("value file %q points at missing ref %q", valueFile, refName)
 	}
 
 	refRepo := repo
-	if !pkg.AreSameRepos(ref.RepoURL, repo.CloneURL) {
+	if !pkg.AreSameRepos(ref.RepoURL, repo.CloneURL) ||
+		!areSameTargetRef(ref.TargetRevision, repo.BranchName) {
 		refRepo, err = getRepo(ctx, ref.RepoURL, ref.TargetRevision)
 		if err != nil {
 			return "", errors.Wrapf(err, "failed to clone repo: %q", ref.RepoURL)
