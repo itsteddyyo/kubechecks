@@ -101,6 +101,20 @@ func TestShouldInclude(t *testing.T) {
 	}
 }
 
+func TestShouldIncludeMultiSourceApp(t *testing.T) {
+	app := v1alpha1.Application{
+		Spec: v1alpha1.ApplicationSpec{
+			Sources: []v1alpha1.ApplicationSource{
+				{TargetRevision: "3.10.0"},
+				{TargetRevision: "main"},
+			},
+		},
+	}
+
+	assert.True(t, shouldInclude(app, "main"))
+	assert.False(t, shouldInclude(app, "release"))
+}
+
 func TestDirContainsPath(t *testing.T) {
 	testcases := []struct {
 		name       string

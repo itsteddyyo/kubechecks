@@ -143,7 +143,19 @@ func getSourcePath(app v1alpha1.Application) string {
 }
 
 func shouldInclude(app v1alpha1.Application, targetBranch string) bool {
-	targetRevision := getTargetRevision(app)
+	if app.Spec.SourceHydrator == nil && app.Spec.HasMultipleSources() {
+		for _, source := range app.Spec.Sources {
+			if targetRevisionMatches(source.TargetRevision, targetBranch) {
+				return true
+			}
+		}
+		return false
+	}
+
+	return targetRevisionMatches(getTargetRevision(app), targetBranch)
+}
+
+func targetRevisionMatches(targetRevision, targetBranch string) bool {
 	if targetRevision == "" {
 		return true
 	}
