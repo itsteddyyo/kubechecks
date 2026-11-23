@@ -160,7 +160,7 @@ func targetRevisionMatches(targetRevision, targetBranch string) bool {
 		return true
 	}
 
-	if targetRevision == targetBranch {
+	if targetRevision == targetBranch || targetRevision == "refs/heads/"+targetBranch {
 		return true
 	}
 

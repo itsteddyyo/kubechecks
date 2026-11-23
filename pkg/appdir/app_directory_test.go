@@ -106,13 +106,16 @@ func TestShouldIncludeMultiSourceApp(t *testing.T) {
 		Spec: v1alpha1.ApplicationSpec{
 			Sources: []v1alpha1.ApplicationSource{
 				{TargetRevision: "3.10.0"},
-				{TargetRevision: "main"},
+				{TargetRevision: "refs/heads/main"},
 			},
 		},
 	}
 
 	assert.True(t, shouldInclude(app, "main"))
 	assert.False(t, shouldInclude(app, "release"))
+
+	app.Spec.Sources[1].TargetRevision = "refs/tags/main"
+	assert.False(t, shouldInclude(app, "main"))
 }
 
 func TestDirContainsPath(t *testing.T) {
