@@ -136,25 +136,49 @@ func TestApplicationDeleted(t *testing.T) {
 	assert.Equal(t, appDirectory.AppsCount(), 0)
 }
 
-// TestIsGitRepo will test various URLs against the isGitRepo function.
-func TestIsGitRepo(t *testing.T) {
+// TestIsGitSource covers supported remote Git sources and excluded source types.
+func TestIsGitSource(t *testing.T) {
 	tests := []struct {
-		url      string
+		name     string
+		source   *v1alpha1.ApplicationSource
 		expected bool
 	}{
-		{"https://github.com/user/repo.git", true},
-		{"https://gitlab.com/user/repo.git", true},
-		{"ssh://gitlab.com/user/repo.git", true},
-		{"user@github.com:user/repo.git", true},
-		{"https://bitbucket.org/user/repo.git", false},
-		{"user@gitlab.invalid/user/repo.git", false},
-		{"http://myownserver.com/git/repo.git", false},
+		{
+			name:     "hosted Git repository",
+			source:   &v1alpha1.ApplicationSource{RepoURL: "https://gitlab.com/user/repo.git"},
+			expected: true,
+		},
+		{
+			name:     "self-hosted Git repository",
+			source:   &v1alpha1.ApplicationSource{RepoURL: "https://gitlab.example.com/user/repo.git"},
+			expected: true,
+		},
+		{
+			name:     "SSH Git repository",
+			source:   &v1alpha1.ApplicationSource{RepoURL: "git@github.example.com:user/repo.git"},
+			expected: true,
+		},
+		{
+			name:     "local file source",
+			source:   &v1alpha1.ApplicationSource{RepoURL: "file://../../../"},
+			expected: false,
+		},
+		{
+			name:     "Helm chart source",
+			source:   &v1alpha1.ApplicationSource{RepoURL: "https://gitlab.com/charts", Chart: "my-chart"},
+			expected: false,
+		},
+		{
+			name:     "empty source",
+			source:   &v1alpha1.ApplicationSource{},
+			expected: false,
+		},
 	}
 
 	for _, test := range tests {
-		if result := isGitRepo(test.url); result != test.expected {
-			t.Errorf("isGitRepo(%q) = %v; want %v", test.url, result, test.expected)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.expected, isGitSource(test.source))
+		})
 	}
 }
 
@@ -199,11 +223,11 @@ func TestCanProcessApp(t *testing.T) {
 			canProcessApp: false,
 		},
 		{
-			name: "single source without git repo",
+			name: "single source with self-hosted Git repo",
 			resource: &v1alpha1.Application{
 				Spec: v1alpha1.ApplicationSpec{
 					Source: &v1alpha1.ApplicationSource{
-						RepoURL: "git@github.com:user/repo.git",
+						RepoURL: "https://gitlab.example.com/user/repo.git",
 					},
 				},
 			},

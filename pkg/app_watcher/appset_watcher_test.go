@@ -206,13 +206,13 @@ func Test_CanProcessAppSet(t *testing.T) {
 			canProcessApp: false,
 		},
 		{
-			name: "single source without git repo",
+			name: "single source with self-hosted Git repo",
 			resource: &v1alpha1.ApplicationSet{
 				Spec: v1alpha1.ApplicationSetSpec{
 					Template: v1alpha1.ApplicationSetTemplate{
 						Spec: v1alpha1.ApplicationSpec{
 							Source: &v1alpha1.ApplicationSource{
-								RepoURL: "git@github.com:user/repo.git",
+								RepoURL: "https://gitlab.example.com/user/repo.git",
 							},
 						},
 					},

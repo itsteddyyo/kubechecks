@@ -190,13 +190,13 @@ func canProcessApp(obj interface{}) (*appv1alpha1.Application, bool) {
 	}
 
 	if src := app.Spec.Source; src != nil {
-		if isGitRepo(src.RepoURL) {
+		if isGitSource(src) {
 			return app, true
 		}
 	}
 
 	for _, src := range app.Spec.Sources {
-		if isGitRepo(src.RepoURL) {
+		if isGitSource(&src) {
 			return app, true
 		}
 	}
@@ -204,6 +204,6 @@ func canProcessApp(obj interface{}) (*appv1alpha1.Application, bool) {
 	return app, false
 }
 
-func isGitRepo(url string) bool {
-	return strings.Contains(url, "gitlab.com") || strings.Contains(url, "github.com")
+func isGitSource(source *appv1alpha1.ApplicationSource) bool {
+	return source != nil && source.RepoURL != "" && source.Chart == "" && !strings.HasPrefix(source.RepoURL, "file://")
 }

@@ -165,12 +165,13 @@ func canProcessAppSet(obj interface{}) (*appv1alpha1.ApplicationSet, bool) {
 	}
 
 	for _, src := range app.Spec.Template.Spec.GetSources() {
-		if isGitRepo(src.RepoURL) {
+		if isGitSource(&src) {
 			return app, true
 		}
 	}
 
-	if isGitRepo(app.Spec.Template.Spec.GetSource().RepoURL) {
+	source := app.Spec.Template.Spec.GetSource()
+	if isGitSource(&source) {
 		return app, true
 	}
 
