@@ -122,15 +122,20 @@ func (r *Repo) Clone(ctx context.Context) error {
 	// If branch is specified and not HEAD, checkout that branch after clone
 	// Note: We don't use SingleBranch=true because it doesn't set up refs/remotes/origin/HEAD
 	// which is needed by GetRemoteHead(). For policy repos, having all branches is acceptable.
+	qualifiedRef := strings.HasPrefix(r.BranchName, "refs/")
 	if r.BranchName != "HEAD" && r.BranchName != "" {
-		cloneOpts.ReferenceName = plumbing.NewBranchReferenceName(r.BranchName)
+		if qualifiedRef {
+			cloneOpts.ReferenceName = plumbing.ReferenceName(r.BranchName)
+		} else {
+			cloneOpts.ReferenceName = plumbing.NewBranchReferenceName(r.BranchName)
+		}
 	}
 
 	// Clone the repository, falling back to tag or commit-SHA references when
-	// the initial branch-based clone fails with "reference not found".
+	// an unqualified branch-based clone fails with "reference not found".
 	repo, err := gogit.PlainCloneContext(ctx, r.Directory, false, cloneOpts)
 	if err != nil {
-		if r.BranchName != "HEAD" && r.BranchName != "" && isRefNotFound(err) {
+		if r.BranchName != "HEAD" && r.BranchName != "" && !qualifiedRef && isRefNotFound(err) {
 			log.Info().Str("branch", r.BranchName).Msg("branch reference not found, retrying as tag")
 
 			// Retry as a tag reference

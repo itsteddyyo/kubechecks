@@ -3,9 +3,13 @@ package git
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -94,6 +98,34 @@ func TestRepoGetRemoteHead(t *testing.T) {
 	currentBranch, err := repo.GetCurrentBranch()
 	require.NoError(t, err)
 	assert.Equal(t, "gh-pages", currentBranch)
+}
+
+func TestRepoCloneQualifiedBranchRef(t *testing.T) {
+	ctx := context.Background()
+	sourceDir := t.TempDir()
+	source, err := gogit.PlainInit(sourceDir, false)
+	require.NoError(t, err)
+
+	worktree, err := source.Worktree()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file"), []byte("content"), 0o600))
+	_, err = worktree.Add("file")
+	require.NoError(t, err)
+	_, err = worktree.Commit("initial commit", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com"},
+	})
+	require.NoError(t, err)
+
+	head, err := source.Head()
+	require.NoError(t, err)
+	branchName := head.Name().String()
+	repo := New(config.ServerConfig{}, sourceDir, branchName)
+	require.NoError(t, repo.Clone(ctx))
+	t.Cleanup(repo.Wipe)
+
+	currentBranch, err := repo.GetCurrentBranch()
+	require.NoError(t, err)
+	assert.Equal(t, head.Name().Short(), currentBranch)
 }
 
 func TestBuildCloneURL(t *testing.T) {
