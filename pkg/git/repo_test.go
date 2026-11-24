@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -102,27 +103,129 @@ func TestRepoGetRemoteHead(t *testing.T) {
 
 func TestRepoCloneQualifiedBranchRef(t *testing.T) {
 	ctx := context.Background()
-	sourceDir := t.TempDir()
-	source, err := gogit.PlainInit(sourceDir, false)
-	require.NoError(t, err)
+	sourceDir, source, qualified := newSourceRepo(t)
 
-	worktree, err := source.Worktree()
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file"), []byte("content"), 0o600))
-	_, err = worktree.Add("file")
-	require.NoError(t, err)
-	_, err = worktree.Commit("initial commit", &gogit.CommitOptions{
-		Author: &object.Signature{Name: "Test", Email: "test@example.com"},
-	})
-	require.NoError(t, err)
-
-	head, err := source.Head()
-	require.NoError(t, err)
-	branchName := head.Name().String()
-	repo := New(config.ServerConfig{}, sourceDir, branchName)
+	repo := New(config.ServerConfig{}, sourceDir, qualified)
 	require.NoError(t, repo.Clone(ctx))
 	t.Cleanup(repo.Wipe)
 
+	head, err := source.Head()
+	require.NoError(t, err)
+	currentBranch, err := repo.GetCurrentBranch()
+	require.NoError(t, err)
+	assert.Equal(t, head.Name().Short(), currentBranch)
+}
+
+func TestQualifyRef(t *testing.T) {
+	testcases := map[string]struct {
+		input    string
+		expected plumbing.ReferenceName
+	}{
+		"bare branch":             {"main", "refs/heads/main"},
+		"bare nested branch":      {"feature/kubechecks", "refs/heads/feature/kubechecks"},
+		"qualified branch":        {"refs/heads/main", "refs/heads/main"},
+		"qualified nested branch": {"refs/heads/feature/kubechecks", "refs/heads/feature/kubechecks"},
+		"qualified tag":           {"refs/tags/customer", "refs/tags/customer"},
+	}
+
+	for name, tc := range testcases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, qualifyRef(tc.input))
+		})
+	}
+}
+
+func TestTrackingRef(t *testing.T) {
+	testcases := map[string]struct {
+		input    string
+		expected plumbing.ReferenceName
+	}{
+		"bare branch":             {"main", "refs/remotes/origin/main"},
+		"qualified branch":        {"refs/heads/main", "refs/remotes/origin/main"},
+		"qualified nested branch": {"refs/heads/feature/kubechecks", "refs/remotes/origin/feature/kubechecks"},
+		// a tag has no remote-tracking equivalent, so it keeps its own name
+		"qualified tag": {"refs/tags/customer", "refs/tags/customer"},
+	}
+
+	for name, tc := range testcases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, trackingRef(tc.input))
+		})
+	}
+}
+
+// commitFile writes content to "file" in a source repository and commits it, returning
+// nothing - callers assert against the clone, not the source.
+func commitFile(t *testing.T, dir string, repo *gogit.Repository, content string) {
+	t.Helper()
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "file"), []byte(content), 0o600))
+	_, err = worktree.Add("file")
+	require.NoError(t, err)
+	_, err = worktree.Commit("commit "+content, &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com"},
+	})
+	require.NoError(t, err)
+}
+
+// newSourceRepo creates a repository with a single commit and returns its directory, the
+// repository, and the fully qualified name of the branch HEAD points at.
+func newSourceRepo(t *testing.T) (string, *gogit.Repository, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	repo, err := gogit.PlainInit(dir, false)
+	require.NoError(t, err)
+
+	commitFile(t, dir, repo, "first")
+
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	qualified := head.Name().String()
+	require.True(t, strings.HasPrefix(qualified, "refs/heads/"), "expected a qualified branch ref, got %q", qualified)
+
+	return dir, repo, qualified
+}
+
+// TestRepoUpdateQualifiedBranchRef covers fetching and resetting a repository whose
+// branch is a fully qualified reference. Building the refspec from the raw name produced
+// "+refs/heads/refs/heads/main:refs/remotes/origin/refs/heads/main", so both the fetch
+// and the reference lookup that follows it failed.
+func TestRepoUpdateQualifiedBranchRef(t *testing.T) {
+	ctx := context.Background()
+	sourceDir, source, qualified := newSourceRepo(t)
+
+	repo := New(config.ServerConfig{}, sourceDir, qualified)
+	require.NoError(t, repo.Clone(ctx))
+	t.Cleanup(repo.Wipe)
+
+	// move the source branch forward, so Update has something to fast-forward to
+	commitFile(t, sourceDir, source, "second")
+
+	require.NoError(t, repo.Update(ctx))
+
+	content, err := os.ReadFile(filepath.Join(repo.Directory, "file"))
+	require.NoError(t, err)
+	assert.Equal(t, "second", string(content))
+}
+
+// TestRepoCheckoutQualifiedBranchRef covers checking out a fully qualified branch
+// reference, which was previously wrapped into "refs/heads/refs/heads/<branch>".
+func TestRepoCheckoutQualifiedBranchRef(t *testing.T) {
+	ctx := context.Background()
+	sourceDir, source, qualified := newSourceRepo(t)
+
+	repo := New(config.ServerConfig{}, sourceDir, qualified)
+	require.NoError(t, repo.Clone(ctx))
+	t.Cleanup(repo.Wipe)
+
+	require.NoError(t, repo.Checkout(qualified))
+
+	head, err := source.Head()
+	require.NoError(t, err)
 	currentBranch, err := repo.GetCurrentBranch()
 	require.NoError(t, err)
 	assert.Equal(t, head.Name().Short(), currentBranch)

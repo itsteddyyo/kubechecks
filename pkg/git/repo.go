@@ -51,6 +51,39 @@ func New(cfg config.ServerConfig, cloneUrl, branchName string) *Repo {
 	}
 }
 
+// isQualifiedRef reports whether a revision is already a fully qualified git reference.
+func isQualifiedRef(branchName string) bool {
+	return strings.HasPrefix(branchName, "refs/")
+}
+
+// qualifyRef returns the fully qualified form of a configured revision.
+//
+// A branch name reaches us either bare ("main", as VCS providers report it) or fully
+// qualified ("refs/heads/main", as an ArgoCD target revision may spell it). A bare name
+// is qualified as a branch; anything already under refs/ is returned untouched, so that
+// a tag such as "refs/tags/customer" keeps pointing at the tag rather than being
+// rewritten into a branch that does not exist.
+func qualifyRef(branchName string) plumbing.ReferenceName {
+	if isQualifiedRef(branchName) {
+		return plumbing.ReferenceName(branchName)
+	}
+	return plumbing.NewBranchReferenceName(branchName)
+}
+
+// trackingRef returns the local reference that fetching branchName writes to.
+//
+// Branches are fetched into their remote-tracking reference
+// (refs/remotes/origin/<short>), which is what the update and diff paths read back.
+// Any other reference - a tag, most commonly - has no remote-tracking equivalent and so
+// keeps its own name on both sides of the refspec.
+func trackingRef(branchName string) plumbing.ReferenceName {
+	qualified := qualifyRef(branchName)
+	if qualified.IsBranch() {
+		return plumbing.NewRemoteReferenceName("origin", qualified.Short())
+	}
+	return qualified
+}
+
 // getAuth returns authentication options for go-git operations.
 // Returns nil for anonymous/public access when no credentials are configured.
 //
@@ -122,13 +155,9 @@ func (r *Repo) Clone(ctx context.Context) error {
 	// If branch is specified and not HEAD, checkout that branch after clone
 	// Note: We don't use SingleBranch=true because it doesn't set up refs/remotes/origin/HEAD
 	// which is needed by GetRemoteHead(). For policy repos, having all branches is acceptable.
-	qualifiedRef := strings.HasPrefix(r.BranchName, "refs/")
+	qualifiedRef := isQualifiedRef(r.BranchName)
 	if r.BranchName != "HEAD" && r.BranchName != "" {
-		if qualifiedRef {
-			cloneOpts.ReferenceName = plumbing.ReferenceName(r.BranchName)
-		} else {
-			cloneOpts.ReferenceName = plumbing.NewBranchReferenceName(r.BranchName)
-		}
+		cloneOpts.ReferenceName = qualifyRef(r.BranchName)
 	}
 
 	// Clone the repository, falling back to tag or commit-SHA references when
@@ -334,9 +363,12 @@ func (r *Repo) Checkout(branchName string) error {
 		return errors.Wrap(err, "failed to get worktree")
 	}
 
-	// Checkout the branch
+	// Checkout the branch. A fully qualified revision is used as-is, so that an
+	// Application pinned to "refs/heads/main" is not looked up as the nonexistent
+	// "refs/heads/refs/heads/main". go-git detaches HEAD when the reference is not a
+	// branch, which is the correct behaviour for a tag.
 	checkoutOpts := &gogit.CheckoutOptions{
-		Branch: plumbing.NewBranchReferenceName(branchName),
+		Branch: qualifyRef(branchName),
 		Force:  false, // Don't force, preserve local changes if any
 	}
 
@@ -380,7 +412,7 @@ func (r *Repo) Update(ctx context.Context) error {
 	// If branch is specified, fetch only that branch
 	if r.BranchName != "HEAD" && r.BranchName != "" {
 		fetchOpts.RefSpecs = []gogitconfig.RefSpec{
-			gogitconfig.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", r.BranchName, r.BranchName)),
+			gogitconfig.RefSpec(fmt.Sprintf("+%s:%s", qualifyRef(r.BranchName), trackingRef(r.BranchName))),
 		}
 	}
 
@@ -397,9 +429,9 @@ func (r *Repo) Update(ctx context.Context) error {
 		return errors.Wrap(err, "failed to get worktree")
 	}
 
-	// Get the reference to origin/branch
-	remoteBranch := fmt.Sprintf("refs/remotes/origin/%s", r.BranchName)
-	ref, err := repo.Reference(plumbing.ReferenceName(remoteBranch), true)
+	// Get the reference the fetch above wrote to
+	remoteBranch := trackingRef(r.BranchName)
+	ref, err := repo.Reference(remoteBranch, true)
 	if err != nil {
 		repoFetchFailed.Inc()
 		log.Error().Err(err).Msgf("failed to get reference to %s", remoteBranch)
@@ -466,10 +498,10 @@ func (r *Repo) GetListOfChangedFiles(ctx context.Context) ([]string, error) {
 	}
 
 	// Get origin/<branch> commit
-	remoteBranchRef := fmt.Sprintf("refs/remotes/origin/%s", r.BranchName)
-	baseRef, err := repo.Reference(plumbing.ReferenceName(remoteBranchRef), true)
+	remoteBranchRef := trackingRef(r.BranchName)
+	baseRef, err := repo.Reference(remoteBranchRef, true)
 	if err != nil {
-		log.Error().Err(err).Str("ref", remoteBranchRef).Msg("failed to get base branch reference")
+		log.Error().Err(err).Str("ref", remoteBranchRef.String()).Msg("failed to get base branch reference")
 		return nil, errors.Wrapf(err, "failed to get reference %s", remoteBranchRef)
 	}
 
