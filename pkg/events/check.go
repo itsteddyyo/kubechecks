@@ -215,8 +215,14 @@ func canonicalize(cloneURL string) (pkg.RepoURL, error) {
 
 type repoKey string
 
+// generateRepoKey builds the clonedRepos cache key for a repository at a branch.
+//
+// The branch is normalized so that a fully qualified reference and its bare branch name
+// resolve to the same entry. Without that, a source pinned to "refs/heads/main" misses
+// the entry stored under the pull request's bare base ref and silently triggers a fresh
+// clone of the base branch instead of reusing the already-prepared merge state.
 func generateRepoKey(cloneURL pkg.RepoURL, branchName string) repoKey {
-	key := fmt.Sprintf("%s|||%s", cloneURL.CloneURL(""), branchName)
+	key := fmt.Sprintf("%s|||%s", cloneURL.CloneURL(""), pkg.NormalizeTargetRef(branchName))
 	return repoKey(key)
 }
 

@@ -117,8 +117,12 @@ func TestAreSameTargetRef(t *testing.T) {
 		ref1, ref2 string
 		expected   bool
 	}{
-		"same":      {"one", "one", true},
-		"different": {"one", "two", false},
+		"same":                  {"one", "one", true},
+		"different":             {"one", "two", false},
+		"qualified branch":      {"refs/heads/main", "main", true},
+		"qualified both sides":  {"refs/heads/main", "refs/heads/main", true},
+		"qualified mismatch":    {"refs/heads/main", "staging", false},
+		"tag is not its branch": {"refs/tags/customer", "customer", false},
 	}
 	for name, tc := range testcases {
 		t.Run(name, func(t *testing.T) {
@@ -225,6 +229,72 @@ func TestPreprocessSources(t *testing.T) {
 		assert.Equal(t, "main", sources[0].TargetRevision)
 		require.Len(t, refs, 1)
 		assert.Equal(t, "test-ref", refs[0].TargetRevision)
+	})
+
+	t.Run("one source, one ref, fully qualified targetrev needs transform", func(t *testing.T) {
+		app := &v1alpha1.Application{
+			Spec: v1alpha1.ApplicationSpec{
+				Sources: []v1alpha1.ApplicationSource{
+					{
+						Ref:            "",
+						RepoURL:        "https://gitlab.example.com/infrastructure/kubernetes.git",
+						TargetRevision: "refs/heads/main",
+						Helm: &v1alpha1.ApplicationSourceHelm{
+							ValueFiles: []string{"$values/argocd/values.yaml"},
+						},
+					},
+					{
+						Ref:            "values",
+						RepoURL:        "https://gitlab.example.com/infrastructure/kubernetes.git",
+						TargetRevision: "refs/heads/main",
+					},
+				},
+			},
+		}
+
+		pr := vcs.PullRequest{
+			CloneURL: "https://gitlab.example.com/infrastructure/kubernetes.git",
+			BaseRef:  "main",
+			HeadRef:  "feature/kubechecks",
+		}
+
+		sources, refs := preprocessSources(app, pr)
+		require.Len(t, sources, 1)
+		// content sources keep their target revision; generateManifests resolves the head
+		// branch separately when it fetches the repo
+		assert.Equal(t, "refs/heads/main", sources[0].TargetRevision)
+		require.Len(t, refs, 1)
+		assert.Equal(t, "feature/kubechecks", refs[0].TargetRevision)
+	})
+
+	t.Run("one source, one ref, fully qualified tag is not transformed", func(t *testing.T) {
+		app := &v1alpha1.Application{
+			Spec: v1alpha1.ApplicationSpec{
+				Sources: []v1alpha1.ApplicationSource{
+					{
+						Ref:            "",
+						RepoURL:        "https://gitlab.example.com/infrastructure/kubernetes.git",
+						TargetRevision: "refs/tags/customer",
+					},
+					{
+						Ref:            "values",
+						RepoURL:        "https://gitlab.example.com/infrastructure/kubernetes.git",
+						TargetRevision: "refs/tags/customer",
+					},
+				},
+			},
+		}
+
+		pr := vcs.PullRequest{
+			CloneURL: "https://gitlab.example.com/infrastructure/kubernetes.git",
+			BaseRef:  "customer",
+			HeadRef:  "feature/kubechecks",
+		}
+
+		sources, refs := preprocessSources(app, pr)
+		require.Len(t, sources, 1)
+		require.Len(t, refs, 1)
+		assert.Equal(t, "refs/tags/customer", refs[0].TargetRevision)
 	})
 
 	t.Run("one source, one ref, no targetrev transform", func(t *testing.T) {

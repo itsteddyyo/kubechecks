@@ -90,7 +90,7 @@ func preprocessSources(app *v1alpha1.Application, pullRequest vcs.PullRequest) (
 			| repo1.git | new-feature | main      | repo1.git | staging    | no change, ref source refers to a different branch than the pull request                        |
 		*/
 		if pkg.AreSameRepos(source.RepoURL, pullRequest.CloneURL) {
-			if source.TargetRevision == pullRequest.BaseRef {
+			if areSameTargetRef(source.TargetRevision, pullRequest.BaseRef) {
 				source.TargetRevision = pullRequest.HeadRef
 			}
 		}
@@ -806,5 +806,5 @@ func sendFile(ctx context.Context, sender sender, file *os.File) error {
 }
 
 func areSameTargetRef(ref1, ref2 string) bool {
-	return ref1 == ref2
+	return pkg.AreSameTargetRefs(ref1, ref2)
 }

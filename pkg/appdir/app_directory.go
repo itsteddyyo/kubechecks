@@ -7,6 +7,8 @@ import (
 
 	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 	"github.com/rs/zerolog/log"
+
+	"github.com/zapier/kubechecks/pkg"
 )
 
 // AppDirectory manages the mapping between applications and their associated directories and files.
@@ -160,7 +162,7 @@ func targetRevisionMatches(targetRevision, targetBranch string) bool {
 		return true
 	}
 
-	if targetRevision == targetBranch || targetRevision == "refs/heads/"+targetBranch {
+	if pkg.AreSameTargetRefs(targetRevision, targetBranch) {
 		return true
 	}
 
