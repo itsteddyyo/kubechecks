@@ -368,3 +368,44 @@ func TestMultipleItemsWithNewlines(t *testing.T) {
 		assert.Equal(t, newline, result[index+4])
 	}
 }
+
+// TestAddNewAppKeepsExistingResults covers the silent loss of finished checks: two
+// workers can hold one app, and the second one opening its section used to install a
+// fresh AppResults over the first one's completed results.
+func TestAddNewAppKeepsExistingResults(t *testing.T) {
+	var (
+		m   = NewMessage("message", 1, 2, fakeEmojiable{":test:"})
+		ctx = context.TODO()
+	)
+
+	m.AddNewApp(ctx, "infrastructure/headlamp-dev")
+	m.AddToAppMessage(ctx, "infrastructure/headlamp-dev", Result{
+		State:   pkg.StateSuccess,
+		Summary: "1 added, 0 modified, 0 removed",
+	})
+
+	// A second worker starts on the same app.
+	m.AddNewApp(ctx, "infrastructure/headlamp-dev")
+
+	assert.Len(t, m.apps["infrastructure/headlamp-dev"].results, 1,
+		"the first worker's finished check must survive")
+	assert.True(t, m.HasChanges(), "the app must still render a section")
+}
+
+// TestAddToAppMessageWithoutAddNewApp makes sure a result for an app whose section was
+// never opened is recorded rather than panicking on a missing entry.
+func TestAddToAppMessageWithoutAddNewApp(t *testing.T) {
+	var (
+		m   = NewMessage("message", 1, 2, fakeEmojiable{":test:"})
+		ctx = context.TODO()
+	)
+
+	assert.NotPanics(t, func() {
+		m.AddToAppMessage(ctx, "infrastructure/headlamp-dev", Result{
+			State:   pkg.StateSuccess,
+			Summary: "1 added, 0 modified, 0 removed",
+		})
+	})
+
+	assert.Len(t, m.apps["infrastructure/headlamp-dev"].results, 1)
+}

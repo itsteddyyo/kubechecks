@@ -265,7 +265,7 @@ func (a *ArgoClient) generateManifests(ctx context.Context, app v1alpha1.Applica
 	// 1. first source must be a non-ref source
 	// 2. there must be one and only one non-ref source
 	// 3. ref sources that match the pull requests' repo and target branch need to have their target branch swapped to the head branch of the pull request
-	log.Info().Str("app", app.Name).Msg("generating manifests")
+	log.Info().Str("app", pkg.AppKey(app)).Msg("generating manifests")
 
 	// External Helm chart sources (OCI or HTTPS Helm repos) cannot be git-cloned.
 	// Instead of streaming files via GenerateManifestWithFiles (which would require
@@ -454,7 +454,7 @@ func (a *ArgoClient) generateManifests(ctx context.Context, app v1alpha1.Applica
 		return nil, errors.Wrap(err, "failed to get response")
 	}
 
-	log.Debug().Caller().Str("app", app.Name).Msg("finished generating manifests")
+	log.Debug().Caller().Str("app", pkg.AppKey(app)).Msg("finished generating manifests")
 	return response.Manifests, nil
 }
 

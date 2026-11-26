@@ -545,9 +545,20 @@ func (ce *CheckEvent) queueApp(app v1alpha1.Application) {
 	dir := app.Spec.GetSource().Path
 
 	if old, ok := ce.addedAppsSet[name]; ok {
-		if reflect.DeepEqual(old, app) {
+		// An application reaches this queue from two directions: the change matcher,
+		// and the diff of an app-of-apps that renders it. Comparing whole objects here
+		// never once matched, because a copy read from the cluster carries a
+		// resourceVersion, a status and managed fields that a copy rendered from a
+		// manifest does not, so the same application was checked twice over by two
+		// workers. What decides whether a second check could differ is the spec.
+		if reflect.DeepEqual(old.Spec, app.Spec) {
+			logger := ce.logger.With().Str("app", name).Logger()
+			logger.Debug().Msg("app is already queued with the same spec, skipping it")
 			return
 		}
+
+		ce.logger.Warn().Str("app", name).
+			Msg("app was queued again with a different spec, both versions will be checked")
 	}
 
 	ce.addedAppsSet[name] = app

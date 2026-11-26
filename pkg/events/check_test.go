@@ -525,3 +525,89 @@ func MockInitMatcherFn() MatcherFn {
 		return nil
 	}
 }
+
+// TestQueueAppDedup covers the duplicate processing that let one worker's finished
+// results be discarded by another: the dedup compared whole Application objects, so a
+// copy read from the cluster never matched a copy rendered from a manifest and the
+// same app was checked twice.
+func TestQueueAppDedup(t *testing.T) {
+	newApp := func(namespace, name, path string) v1alpha1.Application {
+		return v1alpha1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: v1alpha1.ApplicationSpec{
+				Source: &v1alpha1.ApplicationSource{
+					RepoURL: "https://gitlab.example.com/infrastructure/kubernetes.git",
+					Path:    path,
+				},
+			},
+		}
+	}
+
+	// The same application as the informer hands it over, and as it comes back out of
+	// a rendered manifest: identical specs, entirely different metadata and status.
+	fromCluster := newApp("infrastructure", "headlamp-dev", "charts/headlamp")
+	fromCluster.ObjectMeta.ResourceVersion = "80233"
+	fromCluster.ObjectMeta.UID = "0e1d0a06-1f5f-4a0e-91c1-2b8b5b2a7f11"
+	fromCluster.ObjectMeta.Generation = 7
+	fromCluster.Status = v1alpha1.ApplicationStatus{Summary: v1alpha1.ApplicationSummary{
+		Images: []string{"headlamp:0.45.0"},
+	}}
+
+	fromManifest := newApp("infrastructure", "headlamp-dev", "charts/headlamp")
+
+	changedSpec := newApp("infrastructure", "headlamp-dev", "charts/headlamp-moved")
+
+	testcases := []struct {
+		name     string
+		apps     []v1alpha1.Application
+		expected int
+	}{
+		{
+			name:     "the same app queued twice is checked once",
+			apps:     []v1alpha1.Application{fromCluster, fromCluster},
+			expected: 1,
+		},
+		{
+			name:     "a cluster copy and a rendered copy are the same check",
+			apps:     []v1alpha1.Application{fromCluster, fromManifest},
+			expected: 1,
+		},
+		{
+			name:     "a genuinely different spec is checked as well",
+			apps:     []v1alpha1.Application{fromCluster, changedSpec},
+			expected: 2,
+		},
+		{
+			name: "the same name in two namespaces is two apps",
+			apps: []v1alpha1.Application{
+				newApp("infrastructure", "resources-dev", "infrastructure/resources"),
+				newApp("bootstrap", "resources-dev", "bootstrap/resources"),
+			},
+			expected: 2,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			ce := &CheckEvent{
+				addedAppsSet: make(map[string]v1alpha1.Application),
+				appChannel:   make(chan *v1alpha1.Application, len(tc.apps)),
+				logger:       zerolog.Nop(),
+			}
+
+			for _, app := range tc.apps {
+				ce.queueApp(app)
+			}
+			close(ce.appChannel)
+
+			var queued []string
+			for app := range ce.appChannel {
+				queued = append(queued, pkg.AppKey(*app))
+				ce.wg.Done()
+			}
+
+			assert.Len(t, queued, tc.expected, "queued: %v", queued)
+			assert.Equal(t, int32(tc.expected), ce.appsSent)
+		})
+	}
+}

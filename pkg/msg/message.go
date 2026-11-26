@@ -129,6 +129,13 @@ func (m *Message) isDeleted(app string) bool {
 	return false
 }
 
+// AddNewApp opens a section in the report for an app that is about to be checked.
+//
+// It installed a fresh AppResults unconditionally, throwing away anything already
+// collected under that name. Two workers can hold the same app at once - an
+// app-of-apps renders a child that the change matcher found as well - and the second
+// one starting would erase the first one's finished checks, so a check that had run
+// and found changes vanished from the report with nothing logged.
 func (m *Message) AddNewApp(ctx context.Context, app string) {
 	if m.isDeleted(app) {
 		return
@@ -138,6 +145,10 @@ func (m *Message) AddNewApp(ctx context.Context, app string) {
 	defer span.End()
 	m.lock.Lock()
 	defer m.lock.Unlock()
+
+	if _, exists := m.apps[app]; exists {
+		return
+	}
 
 	m.apps[app] = new(AppResults)
 }
@@ -152,7 +163,15 @@ func (m *Message) AddToAppMessage(ctx context.Context, app string, result Result
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	m.apps[app].AddCheckResult(result)
+	// A result can arrive for an app whose section was never opened, and indexing a
+	// missing entry here would panic on a nil AppResults rather than report the check.
+	results, exists := m.apps[app]
+	if !exists {
+		results = new(AppResults)
+		m.apps[app] = results
+	}
+
+	results.AddCheckResult(result)
 }
 
 var hostname = ""
