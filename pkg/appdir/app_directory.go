@@ -200,6 +200,15 @@ func (d *AppDirectory) AddApp(app v1alpha1.Application, repoURL string) {
 	}
 
 	dirs, files := appIndexEntries(app, repoURL)
+	if len(dirs) == 0 && len(files) == 0 {
+		// Nothing in this repository can change what the app renders, so indexing it
+		// here would only produce an entry that no change list can ever match.
+		log.Debug().Caller().
+			Str("appName", app.Name).
+			Str("repoURL", repoURL).
+			Msg("app has no paths in this repository, not indexing it")
+		return
+	}
 
 	log.Debug().
 		Caller().
@@ -226,28 +235,110 @@ func (d *AppDirectory) AddApp(app v1alpha1.Application, repoURL string) {
 // on, and is the single definition of that mapping so that adding and removing an
 // app always touch exactly the same entries.
 func appIndexEntries(app v1alpha1.Application, repoURL string) (dirs []string, files []string) {
-	for _, src := range allSources(app) {
-		if !sourceBelongsToRepo(src.RepoURL, repoURL) {
-			continue
-		}
+	refs := sourceRefs(app)
 
-		dirs = append(dirs, src.Path)
+	for _, src := range allSources(app) {
+		if sourceBelongsToRepo(src.RepoURL, repoURL) {
+			if dir, ok := sourceDir(src); ok {
+				dirs = append(dirs, dir)
+			}
+		}
 
 		helm := src.Helm
 		if helm == nil {
 			continue
 		}
 
+		// A value file may resolve into a repository other than the one declaring it,
+		// so each is placed by where it resolves rather than by where it is written.
+		valueFiles := make([]string, 0, len(helm.FileParameters)+len(helm.ValueFiles))
 		for _, param := range helm.FileParameters {
-			files = append(files, filepath.Join(src.Path, param.Path))
+			valueFiles = append(valueFiles, param.Path)
 		}
+		valueFiles = append(valueFiles, helm.ValueFiles...)
 
-		for _, valueFile := range helm.ValueFiles {
-			files = append(files, filepath.Join(src.Path, valueFile))
+		for _, valueFile := range valueFiles {
+			fileRepoURL, filePath, ok := resolveValueFilePath(valueFile, src, refs)
+			if !ok || !sourceBelongsToRepo(fileRepoURL, repoURL) {
+				continue
+			}
+
+			files = append(files, filePath)
 		}
 	}
 
 	return dirs, files
+}
+
+// sourceDir returns the directory a source contributes to the change index, and
+// whether it contributes one at all.
+//
+// Three kinds of source carry an empty Path and they do not mean the same thing. A
+// Helm chart pulled from a chart repository has no git tree of its own, and a `ref:`
+// source exists only to be named by "$<ref>/..." value file references. Neither is a
+// directory in the repository, yet indexing them as one left the app registered at
+// the repository root, where dirContainsPath matches every change anywhere in the
+// repository. A plain git source with an empty path genuinely is the repository root
+// and still matches everything, which is correct.
+func sourceDir(src v1alpha1.ApplicationSource) (string, bool) {
+	if src.Chart != "" {
+		return "", false
+	}
+
+	if src.Ref != "" && src.Path == "" {
+		return "", false
+	}
+
+	return src.Path, true
+}
+
+// sourceRefs indexes an application's `ref:` sources by their ref name, so that a
+// "$<ref>/..." value file can be resolved back to the source it names.
+func sourceRefs(app v1alpha1.Application) map[string]v1alpha1.ApplicationSource {
+	refs := make(map[string]v1alpha1.ApplicationSource)
+
+	for _, src := range allSources(app) {
+		if src.Ref != "" {
+			refs[src.Ref] = src
+		}
+	}
+
+	return refs
+}
+
+// resolveValueFilePath resolves a Helm value file reference to the repository it
+// lives in and its path within that repository.
+//
+// ArgoCD gives value files two forms. A plain relative path is taken from the
+// directory of the source that declares it. A path beginning "$<ref>/" instead names
+// the source whose `ref:` field is <ref>, and resolves against the root of THAT
+// source, which may be an entirely different repository. Joining the second form onto
+// the declaring source's path, as this once did, yielded paths such as
+// "charts/foo/$values/shared/values.yaml", which no change list can ever match.
+func resolveValueFilePath(
+	valueFile string, src v1alpha1.ApplicationSource, refs map[string]v1alpha1.ApplicationSource,
+) (repoURL, filePath string, ok bool) {
+	if strings.HasPrefix(valueFile, "$") {
+		refName, rest, found := strings.Cut(strings.TrimPrefix(valueFile, "$"), "/")
+		if !found {
+			return "", "", false
+		}
+
+		ref, found := refs[refName]
+		if !found {
+			return "", "", false
+		}
+
+		return ref.RepoURL, filepath.Join(ref.Path, rest), true
+	}
+
+	// A chart pulled from a chart repository has no git tree, so a value file inside
+	// it is not a file any commit to a watched repository can change.
+	if src.Chart != "" {
+		return "", "", false
+	}
+
+	return src.RepoURL, filepath.Join(src.Path, valueFile), true
 }
 
 // sourceBelongsToRepo reports whether a source, or a resolved value file, lives in

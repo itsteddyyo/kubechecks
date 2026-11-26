@@ -281,6 +281,197 @@ func newMultiSourceApp(name, contentRepo, valuesRepo string) v1alpha1.Applicatio
 	}
 }
 
+func TestSourceDir(t *testing.T) {
+	testcases := []struct {
+		name     string
+		src      v1alpha1.ApplicationSource
+		expected string
+		ok       bool
+	}{
+		{
+			name: "a helm chart has no directory in the repository",
+			src:  v1alpha1.ApplicationSource{RepoURL: testChartRepo, Chart: "headlamp"},
+			ok:   false,
+		},
+		{
+			name: "a ref source with no path has no directory",
+			src:  v1alpha1.ApplicationSource{RepoURL: testValuesRepo, Ref: "values"},
+			ok:   false,
+		},
+		{
+			name:     "a ref source that also carries a path contributes it",
+			src:      v1alpha1.ApplicationSource{RepoURL: testValuesRepo, Ref: "values", Path: "shared"},
+			expected: "shared",
+			ok:       true,
+		},
+		{
+			name:     "a plain git source contributes its path",
+			src:      v1alpha1.ApplicationSource{RepoURL: testContentRepo, Path: "charts/foo"},
+			expected: "charts/foo",
+			ok:       true,
+		},
+		{
+			name:     "a plain git source with no path is genuinely the repository root",
+			src:      v1alpha1.ApplicationSource{RepoURL: testContentRepo},
+			expected: "",
+			ok:       true,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, ok := sourceDir(tc.src)
+			assert.Equal(t, tc.ok, ok)
+			if tc.ok {
+				assert.Equal(t, tc.expected, dir)
+			}
+		})
+	}
+}
+
+func TestResolveValueFilePath(t *testing.T) {
+	app := newMultiSourceApp("headlamp-dev", testContentRepo, testValuesRepo)
+	refs := sourceRefs(app)
+	content := app.Spec.Sources[1]
+	chart := app.Spec.Sources[0]
+
+	testcases := []struct {
+		name         string
+		valueFile    string
+		src          v1alpha1.ApplicationSource
+		expectedRepo string
+		expectedPath string
+		ok           bool
+	}{
+		{
+			name:         "a $ref path resolves against the ref source's repository and root",
+			valueFile:    "$values/argocd/values.yaml",
+			src:          content,
+			expectedRepo: testValuesRepo,
+			expectedPath: "argocd/values.yaml",
+			ok:           true,
+		},
+		{
+			name:         "a plain path resolves against the declaring source's directory",
+			valueFile:    "values-override.yaml",
+			src:          content,
+			expectedRepo: testContentRepo,
+			expectedPath: "charts/headlamp-config/values-override.yaml",
+			ok:           true,
+		},
+		{
+			name:         "a $ref path declared by a chart source still resolves",
+			valueFile:    "$values/argocd/values.yaml",
+			src:          chart,
+			expectedRepo: testValuesRepo,
+			expectedPath: "argocd/values.yaml",
+			ok:           true,
+		},
+		{
+			name:      "a plain path inside a chart is not a file in any watched repository",
+			valueFile: "values.yaml",
+			src:       chart,
+			ok:        false,
+		},
+		{
+			name:      "an unknown ref name resolves to nothing",
+			valueFile: "$missing/argocd/values.yaml",
+			src:       content,
+			ok:        false,
+		},
+		{
+			name:      "a $ref with no path resolves to nothing",
+			valueFile: "$values",
+			src:       content,
+			ok:        false,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			repoURL, filePath, ok := resolveValueFilePath(tc.valueFile, tc.src, refs)
+			assert.Equal(t, tc.ok, ok)
+			if tc.ok {
+				assert.Equal(t, tc.expectedRepo, repoURL)
+				assert.Equal(t, tc.expectedPath, filePath)
+			}
+		})
+	}
+}
+
+// TestAddAppMultiSourceSameRepo covers the common shape, where the content source and
+// the ref source are the same repository.
+func TestAddAppMultiSourceSameRepo(t *testing.T) {
+	v2a := NewVcsToArgoMap("vcs-username")
+	app := newMultiSourceApp("headlamp-dev", testContentRepo, testContentRepo)
+	v2a.AddApp(&app)
+
+	dir := v2a.GetAppsInRepo(testContentRepo)
+
+	// The chart source and the ref source both carry an empty path, and neither may
+	// leave the app registered at the repository root.
+	assert.NotContains(t, dir.appDirs, "")
+	assert.Equal(t, map[string][]string{
+		"charts/headlamp-config": {"headlamp-dev"},
+	}, dir.appDirs)
+
+	// "$values/..." resolves against the ref source's root, not onto the content path.
+	assert.Equal(t, map[string][]string{
+		"argocd/values.yaml":     {"headlamp-dev"},
+		"argocd/values-dev.yaml": {"headlamp-dev"},
+	}, dir.appFiles)
+
+	// A chart repository holds nothing the app depends on, so it stays empty.
+	assert.Equal(t, 0, v2a.GetAppsInRepo(testChartRepo).AppsCount())
+}
+
+// TestAddAppMultiSourceCrossRepoRef covers a ref source in a different repository from
+// the content source: each repository must index only its own paths.
+func TestAddAppMultiSourceCrossRepoRef(t *testing.T) {
+	v2a := NewVcsToArgoMap("vcs-username")
+	app := newMultiSourceApp("headlamp-dev", testContentRepo, testValuesRepo)
+	v2a.AddApp(&app)
+
+	content := v2a.GetAppsInRepo(testContentRepo)
+	assert.Equal(t, map[string][]string{
+		"charts/headlamp-config": {"headlamp-dev"},
+	}, content.appDirs)
+	assert.Empty(t, content.appFiles, "the value files live in the values repository")
+
+	values := v2a.GetAppsInRepo(testValuesRepo)
+	assert.Empty(t, values.appDirs, "the content source's path must not leak into the values repository")
+	assert.Equal(t, map[string][]string{
+		"argocd/values.yaml":     {"headlamp-dev"},
+		"argocd/values-dev.yaml": {"headlamp-dev"},
+	}, values.appFiles)
+
+	// A change to the shared values still triggers the app, from the values repository.
+	assert.Len(t, values.FindAppsBasedOnChangeList([]string{"argocd/values.yaml"}, "main"), 1)
+}
+
+// TestMultiSourceAppMatchesOnlyItsOwnPaths is the regression test for the root
+// over-match: an app whose sources include a chart and a ref must not be pulled into
+// every check just because something, anywhere in the repository, changed.
+func TestMultiSourceAppMatchesOnlyItsOwnPaths(t *testing.T) {
+	v2a := NewVcsToArgoMap("vcs-username")
+	app := newMultiSourceApp("headlamp-dev", testContentRepo, testContentRepo)
+	v2a.AddApp(&app)
+
+	dir := v2a.GetAppsInRepo(testContentRepo)
+
+	assert.Empty(t,
+		dir.FindAppsBasedOnChangeList([]string{"argocd/of-apps/bootstrap/templates/vault.yaml"}, "main"),
+		"an unrelated change must not match")
+
+	assert.Len(t,
+		dir.FindAppsBasedOnChangeList([]string{"argocd/values.yaml"}, "main"), 1,
+		"a change to a referenced value file must match")
+
+	assert.Len(t,
+		dir.FindAppsBasedOnChangeList([]string{"charts/headlamp-config/templates/deployment.yaml"}, "main"), 1,
+		"a change to the app's own content must match")
+}
+
 // TestRemoveAppClearsEveryIndexedPath covers the leak where removal only ever cleaned
 // up the first source's path.
 func TestRemoveAppClearsEveryIndexedPath(t *testing.T) {
