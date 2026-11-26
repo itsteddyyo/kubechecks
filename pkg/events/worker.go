@@ -52,7 +52,7 @@ type worker struct {
 func (w *worker) run(ctx context.Context) {
 	for app := range w.appChannel {
 		if app != nil {
-			w.logger.Info().Str("app", app.Name).Msg("Processing App")
+			w.logger.Info().Str("app", pkg.AppKey(*app)).Msg("Processing App")
 			w.processApp(ctx, *app)
 		} else {
 			w.logger.Warn().Msg("appWorkers received a nil app")
@@ -71,7 +71,7 @@ func (w *worker) processApp(ctx context.Context, app v1alpha1.Application) {
 	var (
 		err error
 
-		appName = app.Name
+		appName = pkg.AppKey(app)
 
 		rootLogger = w.logger.With().
 				Str("app_name", appName).

@@ -67,7 +67,7 @@ func Check(ctx context.Context, request checks.Request) (msg.Result, error) {
 
 	app := request.App
 
-	log.Debug().Caller().Str("name", app.Name).Msg("generating diff for application...")
+	log.Debug().Caller().Str("name", pkg.AppKey(app)).Msg("generating diff for application...")
 
 	items := make([]objKeyLiveTarget, 0)
 	var unstructureds []*unstructured.Unstructured

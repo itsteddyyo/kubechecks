@@ -493,3 +493,105 @@ func TestRemoveAppClearsEveryIndexedPath(t *testing.T) {
 		}
 	}
 }
+
+// TestAddAppSameNameInSeveralNamespaces covers applications in any namespace: the same
+// application name in different namespaces identifies different applications, and each
+// must be indexed under its own paths. Keying the index by name alone kept whichever
+// one the informer happened to deliver first and dropped the others, so a change under
+// a dropped application's path matched nothing.
+func TestAddAppSameNameInSeveralNamespaces(t *testing.T) {
+	paths := map[string]string{
+		"bootstrap":      "argocd/of-apps/bootstrap/bootstrap-3/_charts/resources",
+		"infrastructure": "argocd/of-apps/infrastructure/infrastructure-3/_charts/resources",
+		"myodav":         "argocd/app/myodav/_charts/resources",
+	}
+
+	v2a := NewVcsToArgoMap("vcs-username")
+	for namespace, sourcePath := range paths {
+		app := v1alpha1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "resources-dev", Namespace: namespace},
+			Spec: v1alpha1.ApplicationSpec{
+				Sources: []v1alpha1.ApplicationSource{
+					{RepoURL: testContentRepo, Path: sourcePath, TargetRevision: "refs/heads/main"},
+					{RepoURL: testContentRepo, TargetRevision: "refs/heads/main", Ref: "values"},
+				},
+			},
+		}
+		v2a.AddApp(&app)
+	}
+
+	dir := v2a.GetAppsInRepo(testContentRepo)
+	assert.Equal(t, len(paths), dir.AppsCount(), "every namespace's application must be indexed")
+
+	// A change under one application's path matches that application and no other.
+	for namespace, sourcePath := range paths {
+		matched := dir.FindAppsBasedOnChangeList([]string{sourcePath + "/templates/configmap.yaml"}, "main")
+		if !assert.Len(t, matched, 1, "a change under %s should match exactly one app", sourcePath) {
+			continue
+		}
+		assert.Equal(t, "resources-dev", matched[0].Name)
+		assert.Equal(t, namespace, matched[0].Namespace,
+			"a change under %s must match the app in %s", sourcePath, namespace)
+	}
+}
+
+// TestRemoveAppSameNameInSeveralNamespaces makes sure removing one of them leaves the
+// others indexed.
+func TestRemoveAppSameNameInSeveralNamespaces(t *testing.T) {
+	newApp := func(namespace, sourcePath string) *v1alpha1.Application {
+		return &v1alpha1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "resources-dev", Namespace: namespace},
+			Spec: v1alpha1.ApplicationSpec{
+				Sources: []v1alpha1.ApplicationSource{
+					{RepoURL: testContentRepo, Path: sourcePath, TargetRevision: "refs/heads/main"},
+				},
+			},
+		}
+	}
+
+	bootstrap := newApp("bootstrap", "argocd/of-apps/bootstrap/bootstrap-3/_charts/resources")
+	infrastructure := newApp("infrastructure", "argocd/of-apps/infrastructure/infrastructure-3/_charts/resources")
+
+	v2a := NewVcsToArgoMap("vcs-username")
+	v2a.AddApp(bootstrap)
+	v2a.AddApp(infrastructure)
+	v2a.DeleteApp(bootstrap)
+
+	dir := v2a.GetAppsInRepo(testContentRepo)
+	assert.Equal(t, 1, dir.AppsCount())
+
+	matched := dir.FindAppsBasedOnChangeList(
+		[]string{"argocd/of-apps/infrastructure/infrastructure-3/_charts/resources/templates/x.yaml"}, "main")
+	if assert.Len(t, matched, 1, "the surviving app must still match") {
+		assert.Equal(t, "infrastructure", matched[0].Namespace)
+	}
+
+	assert.Empty(t, dir.FindAppsBasedOnChangeList(
+		[]string{"argocd/of-apps/bootstrap/bootstrap-3/_charts/resources/templates/x.yaml"}, "main"),
+		"the removed app must no longer match")
+}
+
+// TestAddAppSetSameNameInSeveralNamespaces is the ApplicationSet equivalent.
+func TestAddAppSetSameNameInSeveralNamespaces(t *testing.T) {
+	v2a := NewVcsToArgoMap("vcs-username")
+
+	for _, namespace := range []string{"bootstrap", "myodav"} {
+		appSet := &v1alpha1.ApplicationSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "tenants", Namespace: namespace},
+			Spec: v1alpha1.ApplicationSetSpec{
+				Template: v1alpha1.ApplicationSetTemplate{
+					Spec: v1alpha1.ApplicationSpec{
+						Source: &v1alpha1.ApplicationSource{
+							RepoURL: testContentRepo,
+							Path:    "appsets/" + namespace,
+						},
+					},
+				},
+			},
+		}
+		v2a.AddAppSet(appSet)
+	}
+
+	assert.Equal(t, 2, v2a.GetAppSetsInRepo(testContentRepo).Count(),
+		"an appset name reused across namespaces must not collide")
+}

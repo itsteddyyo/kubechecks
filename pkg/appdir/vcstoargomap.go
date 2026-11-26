@@ -80,6 +80,10 @@ func (v2a VcsToArgoMap) WalkKustomizeApps(cloneURL string, rootFS fs.FS) *AppDir
 	)
 
 	for _, app := range apps {
+		// The entries built here are unioned with the ones AddApp built, and resolved
+		// back through appsMap, so they must carry the same namespaced key.
+		appKey := pkg.AppKey(app)
+
 		for _, src := range allSources(app) {
 			if !sourceBelongsToRepo(src.RepoURL, cloneURL) {
 				continue
@@ -98,10 +102,10 @@ func (v2a VcsToArgoMap) WalkKustomizeApps(cloneURL string, rootFS fs.FS) *AppDir
 			}
 
 			for _, file := range kustomizeFiles {
-				result.addFile(app.Name, file)
+				result.addFile(appKey, file)
 			}
 			for _, dir := range kustomizeDir {
-				result.addDir(app.Name, dir)
+				result.addDir(appKey, dir)
 			}
 		}
 	}

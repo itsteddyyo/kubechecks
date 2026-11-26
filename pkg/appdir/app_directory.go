@@ -68,38 +68,38 @@ func (d *AppDirectory) FindAppsBasedOnChangeList(changeList []string, targetBran
 	appsSet := make(map[string]struct{})
 	for _, changePath := range changeList {
 		log.Debug().Caller().Msgf("change: %s", changePath)
-		for dir, appNames := range d.appDirs {
+		for dir, appKeys := range d.appDirs {
 			if dirContainsPath(dir, changePath) {
 				log.Debug().Caller().
 					Str("changePath", changePath).
 					Str("dir", dir).
 					Msg("dir match!")
-				for _, appName := range appNames {
-					appsSet[appName] = struct{}{}
+				for _, appKey := range appKeys {
+					appsSet[appKey] = struct{}{}
 				}
 			}
 		}
 
-		appNames, ok := d.appFiles[changePath]
+		appKeys, ok := d.appFiles[changePath]
 		if ok {
 			log.Debug().Caller().Str("changePath", changePath).Msg("file match!")
-			for _, appName := range appNames {
-				appsSet[appName] = struct{}{}
+			for _, appKey := range appKeys {
+				appsSet[appKey] = struct{}{}
 			}
 		}
 	}
 
 	var appsSlice []v1alpha1.Application
-	for appName := range appsSet {
-		app, ok := d.appsMap[appName]
+	for appKey := range appsSet {
+		app, ok := d.appsMap[appKey]
 		if !ok {
-			log.Warn().Msgf("failed to find matched app named '%s'", appName)
+			log.Warn().Msgf("failed to find matched app named '%s'", appKey)
 			continue
 		}
 
 		if !shouldInclude(app, targetBranch) {
 			log.Debug().Caller().
-				Msgf("target revision of %s is %s and does not match '%s'", appName, getTargetRevision(app), targetBranch)
+				Msgf("target revision of %s is %s and does not match '%s'", appKey, getTargetRevision(app), targetBranch)
 			continue
 		}
 
@@ -194,8 +194,10 @@ func (d *AppDirectory) GetApps(filter func(stub v1alpha1.Application) bool) []v1
 // that actually live in it are indexed here; passing an empty repoURL indexes every
 // source, which is what a directory built outside VcsToArgoMap wants.
 func (d *AppDirectory) AddApp(app v1alpha1.Application, repoURL string) {
-	if _, exists := d.appsMap[app.Name]; exists {
-		log.Debug().Caller().Msgf("app %s already exists", app.Name)
+	appKey := pkg.AppKey(app)
+
+	if _, exists := d.appsMap[appKey]; exists {
+		log.Debug().Caller().Msgf("app %s already exists", appKey)
 		return
 	}
 
@@ -204,7 +206,7 @@ func (d *AppDirectory) AddApp(app v1alpha1.Application, repoURL string) {
 		// Nothing in this repository can change what the app renders, so indexing it
 		// here would only produce an entry that no change list can ever match.
 		log.Debug().Caller().
-			Str("appName", app.Name).
+			Str("appName", appKey).
 			Str("repoURL", repoURL).
 			Msg("app has no paths in this repository, not indexing it")
 		return
@@ -212,7 +214,7 @@ func (d *AppDirectory) AddApp(app v1alpha1.Application, repoURL string) {
 
 	log.Debug().
 		Caller().
-		Str("appName", app.Name).
+		Str("appName", appKey).
 		Str("cluster-name", app.Spec.Destination.Name).
 		Str("cluster-server", app.Spec.Destination.Server).
 		Str("repoURL", repoURL).
@@ -220,14 +222,14 @@ func (d *AppDirectory) AddApp(app v1alpha1.Application, repoURL string) {
 		Strs("files", files).
 		Msg("add app")
 
-	d.appsMap[app.Name] = app
+	d.appsMap[appKey] = app
 
 	for _, dir := range dirs {
-		d.addDir(app.Name, dir)
+		d.addDir(appKey, dir)
 	}
 
 	for _, file := range files {
-		d.addFile(app.Name, file)
+		d.addFile(appKey, file)
 	}
 }
 
@@ -382,25 +384,27 @@ func (d *AppDirectory) addFile(appName, path string) {
 // app behind in every other directory and file it had been indexed under, so an
 // update that changed a source path kept matching the old one forever.
 func (d *AppDirectory) RemoveApp(app v1alpha1.Application, repoURL string) {
+	appKey := pkg.AppKey(app)
+
 	log.Debug().
 		Caller().
-		Str("appName", app.Name).
+		Str("appName", appKey).
 		Str("cluster-name", app.Spec.Destination.Name).
 		Str("cluster-server", app.Spec.Destination.Server).
 		Str("repoURL", repoURL).
 		Msg("delete app")
 
 	// remove app from appsMap
-	delete(d.appsMap, app.Name)
+	delete(d.appsMap, appKey)
 
 	dirs, files := appIndexEntries(app, repoURL)
 
 	for _, dir := range dirs {
-		d.appDirs[dir] = removeFromSlice[string](d.appDirs[dir], app.Name, func(a, b string) bool { return a == b })
+		d.appDirs[dir] = removeFromSlice[string](d.appDirs[dir], appKey, func(a, b string) bool { return a == b })
 	}
 
 	for _, file := range files {
-		d.appFiles[file] = removeFromSlice[string](d.appFiles[file], app.Name, func(a, b string) bool { return a == b })
+		d.appFiles[file] = removeFromSlice[string](d.appFiles[file], appKey, func(a, b string) bool { return a == b })
 	}
 }
 

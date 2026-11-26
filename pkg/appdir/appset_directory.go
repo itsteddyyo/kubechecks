@@ -51,7 +51,7 @@ func (d *AppSetDirectory) Union(other *AppSetDirectory) *AppSetDirectory {
 }
 
 func (d *AppSetDirectory) ProcessAppSet(app v1alpha1.ApplicationSet) {
-	appName := app.GetName()
+	appName := pkg.AppSetKey(app)
 
 	src := app.Spec.Template.Spec.GetSource()
 
@@ -112,8 +112,9 @@ func (d *AppSetDirectory) FindAppSetsBasedOnChangeList(changeList []string, repo
 		}
 
 		// Store the unique ApplicationSet
-		if _, exists := appsSet[appSet.Name]; !exists {
-			appsSet[appSet.Name] = struct{}{}
+		appSetKey := pkg.AppSetKey(*appSet)
+		if _, exists := appsSet[appSetKey]; !exists {
+			appsSet[appSetKey] = struct{}{}
 			appSets = append(appSets, *appSet)
 		}
 	}
@@ -138,17 +139,19 @@ func (d *AppSetDirectory) GetAppSets(filter func(stub v1alpha1.ApplicationSet) b
 }
 
 func (d *AppSetDirectory) AddAppSet(appSet *v1alpha1.ApplicationSet) {
-	if _, exists := d.appSetsMap[appSet.GetName()]; exists {
-		log.Info().Msgf("appset %s already exists", appSet.Name)
+	appSetKey := pkg.AppSetKey(*appSet)
+
+	if _, exists := d.appSetsMap[appSetKey]; exists {
+		log.Info().Msgf("appset %s already exists", appSetKey)
 		return
 	}
 	log.Debug().
 		Caller().
-		Str("appName", appSet.GetName()).
+		Str("appName", appSetKey).
 		Str("source", appSetGetSourcePath(appSet)).
 		Msg("add appset")
-	d.appSetsMap[appSet.GetName()] = *appSet
-	d.AddDir(appSet.GetName(), appSetGetSourcePath(appSet))
+	d.appSetsMap[appSetKey] = *appSet
+	d.AddDir(appSetKey, appSetGetSourcePath(appSet))
 }
 
 func (d *AppSetDirectory) AddDir(appName, path string) {
@@ -160,17 +163,19 @@ func (d *AppSetDirectory) AddFile(appName, path string) {
 }
 
 func (d *AppSetDirectory) RemoveAppSet(app v1alpha1.ApplicationSet) {
+	appSetKey := pkg.AppSetKey(app)
+
 	log.Debug().
 		Caller().
-		Str("appName", app.Name).
+		Str("appName", appSetKey).
 		Msg("delete app")
 
 	// remove app from appSetsMap
-	delete(d.appSetsMap, app.Name)
+	delete(d.appSetsMap, appSetKey)
 
 	// Clean up app from appSetDirs
 	sourcePath := appSetGetSourcePath(&app)
-	d.appSetDirs[sourcePath] = removeFromSlice[string](d.appSetDirs[sourcePath], app.Name, func(a, b string) bool { return a == b })
+	d.appSetDirs[sourcePath] = removeFromSlice[string](d.appSetDirs[sourcePath], appSetKey, func(a, b string) bool { return a == b })
 
 	// Clean up app from appSetFiles
 	src := app.Spec.Template.Spec.GetSource()
@@ -178,12 +183,12 @@ func (d *AppSetDirectory) RemoveAppSet(app v1alpha1.ApplicationSet) {
 	if helm := src.Helm; helm != nil {
 		for _, param := range helm.FileParameters {
 			path := filepath.Join(srcPath, param.Path)
-			d.appSetFiles[path] = removeFromSlice[string](d.appSetFiles[path], app.Name, func(a, b string) bool { return a == b })
+			d.appSetFiles[path] = removeFromSlice[string](d.appSetFiles[path], appSetKey, func(a, b string) bool { return a == b })
 		}
 
 		for _, valueFilePath := range helm.ValueFiles {
 			path := filepath.Join(srcPath, valueFilePath)
-			d.appSetFiles[path] = removeFromSlice[string](d.appSetFiles[path], app.Name, func(a, b string) bool { return a == b })
+			d.appSetFiles[path] = removeFromSlice[string](d.appSetFiles[path], appSetKey, func(a, b string) bool { return a == b })
 		}
 	}
 }

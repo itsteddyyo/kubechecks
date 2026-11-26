@@ -195,7 +195,7 @@ func (ce *CheckEvent) GenerateListOfAffectedApps(ctx context.Context, repo *git.
 		attribute.String("affectedAppSets", fmt.Sprintf("%+v", ce.affectedItems.ApplicationSets)),
 	)
 	for _, app := range ce.affectedItems.Applications {
-		ce.logger.Debug().Caller().Msgf("Affected apps: %+v", app.Name)
+		ce.logger.Debug().Caller().Msgf("Affected apps: %+v", pkg.AppKey(app))
 	}
 	for _, appset := range ce.affectedItems.ApplicationSets {
 		ce.logger.Debug().Caller().Msgf("Affected appSets: %+v", appset.Name)
@@ -527,16 +527,21 @@ func (ce *CheckEvent) postReport(ctx context.Context, start time.Time) error {
 }
 
 func (ce *CheckEvent) removeApp(app v1alpha1.Application) {
-	ce.logger.Info().Str("app", app.Name).Msg("removing app")
+	appKey := pkg.AppKey(app)
 
-	ce.vcsNote.RemoveApp(app.Name)
+	ce.logger.Info().Str("app", appKey).Msg("removing app")
+
+	ce.vcsNote.RemoveApp(appKey)
 }
 
 func (ce *CheckEvent) queueApp(app v1alpha1.Application) {
 	ce.addedAppsSetLock.Lock()
 	defer ce.addedAppsSetLock.Unlock()
 
-	name := app.Name
+	// Applications are identified by namespace and name: the same name in two
+	// namespaces is two different applications, and keying this set by name alone
+	// let one of them stand in for the other.
+	name := pkg.AppKey(app)
 	dir := app.Spec.GetSource().Path
 
 	if old, ok := ce.addedAppsSet[name]; ok {
