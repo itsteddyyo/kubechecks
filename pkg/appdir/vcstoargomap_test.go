@@ -2,6 +2,7 @@ package appdir
 
 import (
 	"testing"
+	"testing/fstest"
 
 	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 	"github.com/stretchr/testify/assert"
@@ -183,4 +184,34 @@ func TestVcsToArgoMap_DeleteAppSet(t *testing.T) {
 	v2a.DeleteAppSet(app2)
 	assert.Equal(t, appDir.Count(), 1)
 	assert.Equal(t, len(appDir.appSetDirs["test-app-2"]), 0)
+}
+
+// TestWalkKustomizeAppsSkipsSourcesWithoutADirectory covers the second root
+// over-match: kustomize.ProcessKustomizationFile reports a directory holding no
+// kustomization.yaml as a match rather than an error, so following a source with no
+// path indexed the app at the repository root.
+func TestWalkKustomizeAppsSkipsSourcesWithoutADirectory(t *testing.T) {
+	v2a := NewVcsToArgoMap("vcs-username")
+	app := newMultiSourceApp("headlamp-dev", testContentRepo, testContentRepo)
+	v2a.AddApp(&app)
+
+	// A repository with no kustomization.yaml anywhere, so every directory that is
+	// looked up comes back as "the directory is what matters".
+	rootFS := fstest.MapFS{
+		"argocd/values.yaml": &fstest.MapFile{Data: []byte("{}")},
+	}
+
+	result := v2a.WalkKustomizeApps(testContentRepo, rootFS)
+
+	assert.NotContains(t, result.appDirs, ".", "the repository root must not be indexed")
+	assert.NotContains(t, result.appDirs, "", "the repository root must not be indexed")
+	assert.Equal(t, map[string][]string{
+		"charts/headlamp-config": {"headlamp-dev"},
+	}, result.appDirs)
+
+	// The union of the two directories is what the matcher actually consults, and an
+	// unrelated change must not reach the app through either of them.
+	combined := v2a.GetAppsInRepo(testContentRepo).Union(result)
+	assert.Empty(t, combined.FindAppsBasedOnChangeList(
+		[]string{"argocd/of-apps/infrastructure/infrastructure-3/templates/headlamp.yaml"}, "main"))
 }

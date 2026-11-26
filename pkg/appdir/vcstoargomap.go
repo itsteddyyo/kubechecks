@@ -62,6 +62,16 @@ func (v2a VcsToArgoMap) GetAppSetsInRepo(repoCloneUrl string) *AppSetDirectory {
 	return appSetDir
 }
 
+// WalkKustomizeApps indexes the files and directories a kustomization pulls in, for
+// every source of every app in cloneURL that is a directory in that repository.
+//
+// It once looked only at app.Spec.GetSource(), which for a multi-source application is
+// Sources[0] - frequently a Helm chart or a bare `ref:` source, neither of which has a
+// path. That resolved to the repository root, and since processDir reports a directory
+// holding no kustomization.yaml as a successful match rather than an error, every such
+// app was indexed at ".", where dirContainsPath matches every change in the
+// repository. That put the apps back in reach of every check no matter what changed,
+// undoing the indexing AddApp had just done correctly.
 func (v2a VcsToArgoMap) WalkKustomizeApps(cloneURL string, rootFS fs.FS) *AppDirectory {
 	var (
 		result = NewAppDirectory()
@@ -70,18 +80,29 @@ func (v2a VcsToArgoMap) WalkKustomizeApps(cloneURL string, rootFS fs.FS) *AppDir
 	)
 
 	for _, app := range apps {
-		appPath := app.Spec.GetSource().Path
+		for _, src := range allSources(app) {
+			if !sourceBelongsToRepo(src.RepoURL, cloneURL) {
+				continue
+			}
 
-		kustomizePath := filepath.Join(appPath, "kustomization.yaml")
-		kustomizeFiles, kustomizeDir, err := kustomize.ProcessKustomizationFile(rootFS, kustomizePath)
-		if err != nil {
-			log.Error().Err(err).Msgf("failed to parse kustomize.yaml in %s", appPath)
-		}
-		for _, file := range kustomizeFiles {
-			result.addFile(app.Name, file)
-		}
-		for _, dir := range kustomizeDir {
-			result.addDir(app.Name, dir)
+			appPath, ok := sourceDir(src)
+			if !ok {
+				continue
+			}
+
+			kustomizePath := filepath.Join(appPath, "kustomization.yaml")
+			kustomizeFiles, kustomizeDir, err := kustomize.ProcessKustomizationFile(rootFS, kustomizePath)
+			if err != nil {
+				log.Error().Err(err).Msgf("failed to parse kustomize.yaml in %s", appPath)
+				continue
+			}
+
+			for _, file := range kustomizeFiles {
+				result.addFile(app.Name, file)
+			}
+			for _, dir := range kustomizeDir {
+				result.addDir(app.Name, dir)
+			}
 		}
 	}
 
