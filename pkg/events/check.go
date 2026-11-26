@@ -239,7 +239,14 @@ func (ce *CheckEvent) getRepo(ctx context.Context, cloneURL, branchName string) 
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to parse clone url")
 	}
-	cloneURL = parsed.CloneURL(ce.ctr.VcsClient.CloneUsername())
+	// The VCS username belongs only on the configured instance. Embedding it in a
+	// third-party clone URL discloses it and makes that host attempt basic auth with a
+	// credential it will reject, so foreign repositories are cloned without one.
+	var cloneUsername string
+	if pkg.IsConfiguredVcsHost(cloneURL, ce.ctr.Config.VcsBaseUrl) {
+		cloneUsername = ce.ctr.VcsClient.CloneUsername()
+	}
+	cloneURL = parsed.CloneURL(cloneUsername)
 
 	branchName = strings.TrimSpace(branchName)
 	if branchName == "" {

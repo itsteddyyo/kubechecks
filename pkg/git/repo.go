@@ -92,6 +92,19 @@ func trackingRef(branchName string) plumbing.ReferenceName {
 // the REST API client, so git-over-HTTPS needs credentials resolved here. It falls back
 // to the static VcsToken when no provider is set.
 func (r *Repo) getAuth(ctx context.Context) (*gogithttp.BasicAuth, error) {
+	// Credentials belong to the configured VCS instance and are sent nowhere else. An
+	// Application source may point at any host - a public GitHub repository holding
+	// CRDs, say - and attaching the VCS token there both fails the clone, since the
+	// host rejects a credential it did not issue, and discloses that token to a third
+	// party.
+	if !pkg.IsConfiguredVcsHost(r.CloneURL, r.Config.VcsBaseUrl) {
+		log.Debug().
+			Caller().
+			Str("clone-url", r.CloneURL).
+			Msg("repository is not on the configured VCS host, cloning anonymously")
+		return nil, nil
+	}
+
 	if r.Config.GitCreds != nil {
 		username, password, err := r.Config.GitCreds(ctx)
 		if err != nil {

@@ -53,6 +53,43 @@ func Canonicalize(cloneURL string) (RepoURL, error) {
 	return parsed, nil
 }
 
+// SameHost reports whether two git URLs live on the same host.
+//
+// It is the test for whether a repository belongs to the configured VCS instance, and
+// therefore whether that instance's credentials may be sent to it. A URL whose host
+// cannot be determined matches nothing, so callers gating credentials on this fail
+// closed rather than disclosing a token to an unknown host.
+func SameHost(url1, url2 string) bool {
+	host1, ok1 := hostOf(url1)
+	host2, ok2 := hostOf(url2)
+	return ok1 && ok2 && host1 == host2
+}
+
+// IsConfiguredVcsHost reports whether a repository belongs to the configured VCS
+// instance, and therefore whether that instance's credentials may be sent to it.
+//
+// An unset base URL imposes no restriction: the configuration loader always populates
+// it, so an empty value means the caller constructed a config directly and should keep
+// the previous behaviour rather than silently lose authentication.
+func IsConfiguredVcsHost(cloneURL, vcsBaseURL string) bool {
+	if vcsBaseURL == "" {
+		return true
+	}
+
+	return SameHost(cloneURL, vcsBaseURL)
+}
+
+// hostOf returns the lowercased host of a git URL, reporting false when the URL cannot
+// be parsed or carries no host - a local path, for instance.
+func hostOf(rawURL string) (string, bool) {
+	parsed, _, err := NormalizeRepoUrl(rawURL)
+	if err != nil || parsed.Host == "" {
+		return "", false
+	}
+
+	return strings.ToLower(parsed.Host), true
+}
+
 func AreSameRepos(url1, url2 string) bool {
 	repo1, err := Canonicalize(url1)
 	if err != nil {

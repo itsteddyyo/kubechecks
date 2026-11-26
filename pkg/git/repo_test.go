@@ -80,6 +80,64 @@ func TestRepoGetAuth(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, auth)
 	})
+
+	// An Application source may point at any host - a public GitHub repository holding
+	// CRDs, for instance. Sending the configured instance's token there fails the clone
+	// and discloses the token, so credentials stop at the configured host.
+	t.Run("VcsToken is withheld from a foreign host", func(t *testing.T) {
+		cfg := config.ServerConfig{
+			VcsBaseUrl: "https://gitlab.int.example.com",
+			VcsToken:   "glpat_static_pat",
+		}
+		repo := New(cfg, "https://github.com/kubernetes-sigs/gateway-api.git", "")
+
+		auth, err := repo.getAuth(ctx)
+		require.NoError(t, err)
+		assert.Nil(t, auth)
+	})
+
+	t.Run("credential provider is not consulted for a foreign host", func(t *testing.T) {
+		called := false
+		cfg := config.ServerConfig{
+			VcsBaseUrl: "https://gitlab.int.example.com",
+			GitCreds: func(context.Context) (string, string, error) {
+				called = true
+				return "x-access-token", "ghs_installation_token", nil
+			},
+		}
+		repo := New(cfg, "https://github.com/kairos-io/kairos-operator.git", "")
+
+		auth, err := repo.getAuth(ctx)
+		require.NoError(t, err)
+		assert.Nil(t, auth)
+		assert.False(t, called, "credential provider must not be invoked for a foreign host")
+	})
+
+	t.Run("VcsToken is sent to the configured host", func(t *testing.T) {
+		cfg := config.ServerConfig{
+			VcsBaseUrl: "https://gitlab.int.example.com",
+			VcsToken:   "glpat_static_pat",
+		}
+		repo := New(cfg, "https://gitlab.int.example.com/infrastructure/kubernetes.git", "")
+
+		auth, err := repo.getAuth(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, auth)
+		assert.Equal(t, "glpat_static_pat", auth.Password)
+	})
+
+	t.Run("VcsToken is sent to the configured host over ssh", func(t *testing.T) {
+		cfg := config.ServerConfig{
+			VcsBaseUrl: "https://gitlab.int.example.com",
+			VcsToken:   "glpat_static_pat",
+		}
+		repo := New(cfg, "git@gitlab.int.example.com:infrastructure/kubernetes.git", "")
+
+		auth, err := repo.getAuth(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, auth)
+		assert.Equal(t, "glpat_static_pat", auth.Password)
+	})
 }
 
 func TestRepoGetRemoteHead(t *testing.T) {
