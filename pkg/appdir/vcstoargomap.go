@@ -88,38 +88,54 @@ func (v2a VcsToArgoMap) WalkKustomizeApps(cloneURL string, rootFS fs.FS) *AppDir
 	return result
 }
 
-func (v2a VcsToArgoMap) processApp(app v1alpha1.Application, fn func(*AppDirectory)) {
+// processApp calls fn once for each distinct repository an application's sources
+// refer to, with that repository's directory and its URL.
+//
+// Calling fn once per source instead would hand the same directory to fn repeatedly
+// for an application with several sources in one repository, and leave each directory
+// unable to tell which of the application's paths were its own.
+func (v2a VcsToArgoMap) processApp(app v1alpha1.Application, fn func(*AppDirectory, string)) {
+	seen := make(map[pkg.RepoURL]struct{})
 
-	if src := app.Spec.Source; src != nil {
-		appDirectory := v2a.GetAppsInRepo(src.RepoURL)
-		fn(appDirectory)
-	}
+	for _, src := range allSources(app) {
+		if src.RepoURL == "" {
+			continue
+		}
 
-	for _, src := range app.Spec.Sources {
-		appDirectory := v2a.GetAppsInRepo(src.RepoURL)
-		fn(appDirectory)
+		normalized, _, err := pkg.NormalizeRepoUrl(src.RepoURL)
+		if err != nil {
+			log.Warn().Err(err).Msgf("failed to parse %s", src.RepoURL)
+			continue
+		}
+
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+
+		fn(v2a.GetAppsInRepo(src.RepoURL), src.RepoURL)
 	}
 }
 
 func (v2a VcsToArgoMap) AddApp(app *v1alpha1.Application) {
-	v2a.processApp(*app, func(directory *AppDirectory) {
-		directory.AddApp(*app)
+	v2a.processApp(*app, func(directory *AppDirectory, repoURL string) {
+		directory.AddApp(*app, repoURL)
 	})
 }
 
 func (v2a VcsToArgoMap) UpdateApp(old *v1alpha1.Application, new *v1alpha1.Application) {
-	v2a.processApp(*old, func(directory *AppDirectory) {
-		directory.RemoveApp(*old)
+	v2a.processApp(*old, func(directory *AppDirectory, repoURL string) {
+		directory.RemoveApp(*old, repoURL)
 	})
 
-	v2a.processApp(*new, func(directory *AppDirectory) {
-		directory.AddApp(*new)
+	v2a.processApp(*new, func(directory *AppDirectory, repoURL string) {
+		directory.AddApp(*new, repoURL)
 	})
 }
 
 func (v2a VcsToArgoMap) DeleteApp(app *v1alpha1.Application) {
-	v2a.processApp(*app, func(directory *AppDirectory) {
-		directory.RemoveApp(*app)
+	v2a.processApp(*app, func(directory *AppDirectory, repoURL string) {
+		directory.RemoveApp(*app, repoURL)
 	})
 }
 

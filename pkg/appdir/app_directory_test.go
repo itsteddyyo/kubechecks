@@ -31,7 +31,7 @@ func TestPathsAreJoinedProperly(t *testing.T) {
 		},
 	}
 
-	rad.AddApp(app1)
+	rad.AddApp(app1, "")
 
 	assert.Equal(t, map[string]v1alpha1.Application{
 		"test-app": app1,
@@ -201,7 +201,7 @@ func TestFindAppsBasedOnChangeList_RootPath(t *testing.T) {
 			},
 		},
 	}
-	d.AddApp(app)
+	d.AddApp(app, "")
 
 	changeList := []string{
 		"charts/appchart/templates/_helpers.tpl",
@@ -239,4 +239,66 @@ func TestRemoveFromSlice(t *testing.T) {
 	t.Run("Integers", intsTest)
 	t.Run("Strings", stringsTest)
 	// Add more subtests for different generic types if necessary
+}
+
+const (
+	testContentRepo = "https://gitlab.example.com/infrastructure/kubernetes.git"
+	testValuesRepo  = "https://gitlab.example.com/infrastructure/shared-values.git"
+	testChartRepo   = "https://kubernetes-sigs.github.io/headlamp"
+)
+
+// newMultiSourceApp builds an application shaped like a real multi-source ArgoCD app:
+// a Helm chart from a chart repository, a content source in a git repository, and a
+// `ref:` source whose root the content source's value files are written against.
+func newMultiSourceApp(name, contentRepo, valuesRepo string) v1alpha1.Application {
+	return v1alpha1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: v1alpha1.ApplicationSpec{
+			Sources: []v1alpha1.ApplicationSource{
+				{
+					RepoURL:        testChartRepo,
+					Chart:          "headlamp",
+					TargetRevision: "0.45.0",
+				},
+				{
+					RepoURL:        contentRepo,
+					Path:           "charts/headlamp-config",
+					TargetRevision: "refs/heads/main",
+					Helm: &v1alpha1.ApplicationSourceHelm{
+						ValueFiles: []string{
+							"$values/argocd/values.yaml",
+							"$values/argocd/values-dev.yaml",
+						},
+					},
+				},
+				{
+					RepoURL:        valuesRepo,
+					TargetRevision: "refs/heads/main",
+					Ref:            "values",
+				},
+			},
+		},
+	}
+}
+
+// TestRemoveAppClearsEveryIndexedPath covers the leak where removal only ever cleaned
+// up the first source's path.
+func TestRemoveAppClearsEveryIndexedPath(t *testing.T) {
+	v2a := NewVcsToArgoMap("vcs-username")
+	app := newMultiSourceApp("headlamp-dev", testContentRepo, testValuesRepo)
+
+	v2a.AddApp(&app)
+	v2a.DeleteApp(&app)
+
+	for _, repo := range []string{testContentRepo, testValuesRepo} {
+		dir := v2a.GetAppsInRepo(repo)
+		assert.Equal(t, 0, dir.AppsCount(), "repo %s still holds the app", repo)
+
+		for indexed, names := range dir.appDirs {
+			assert.Empty(t, names, "%s: appDirs[%q] still holds %v", repo, indexed, names)
+		}
+		for indexed, names := range dir.appFiles {
+			assert.Empty(t, names, "%s: appFiles[%q] still holds %v", repo, indexed, names)
+		}
+	}
 }

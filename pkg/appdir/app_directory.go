@@ -140,10 +140,6 @@ func getTargetRevision(app v1alpha1.Application) string {
 	return app.Spec.GetSource().TargetRevision
 }
 
-func getSourcePath(app v1alpha1.Application) string {
-	return app.Spec.GetSource().Path
-}
-
 func shouldInclude(app v1alpha1.Application, targetBranch string) bool {
 	if app.Spec.SourceHydrator == nil && app.Spec.HasMultipleSources() {
 		for _, source := range app.Spec.Sources {
@@ -190,46 +186,94 @@ func (d *AppDirectory) GetApps(filter func(stub v1alpha1.Application) bool) []v1
 	return result
 }
 
-func (d *AppDirectory) AddApp(app v1alpha1.Application) {
+// AddApp indexes the directories and files within repoURL whose modification should
+// trigger a check of app.
+//
+// An application's sources may span repositories, and each repository gets its own
+// AppDirectory. repoURL names the one this directory holds, so that only the paths
+// that actually live in it are indexed here; passing an empty repoURL indexes every
+// source, which is what a directory built outside VcsToArgoMap wants.
+func (d *AppDirectory) AddApp(app v1alpha1.Application, repoURL string) {
 	if _, exists := d.appsMap[app.Name]; exists {
 		log.Debug().Caller().Msgf("app %s already exists", app.Name)
 		return
 	}
 
-	for _, src := range getSources(app) {
-		sourcePath := src.Path
-		log.Debug().
-			Caller().
-			Str("appName", app.Name).
-			Str("cluster-name", app.Spec.Destination.Name).
-			Str("cluster-server", app.Spec.Destination.Server).
-			Str("source", sourcePath).
-			Msg("add app")
+	dirs, files := appIndexEntries(app, repoURL)
 
-		d.appsMap[app.Name] = app
-		d.addDir(app.Name, sourcePath)
+	log.Debug().
+		Caller().
+		Str("appName", app.Name).
+		Str("cluster-name", app.Spec.Destination.Name).
+		Str("cluster-server", app.Spec.Destination.Server).
+		Str("repoURL", repoURL).
+		Strs("dirs", dirs).
+		Strs("files", files).
+		Msg("add app")
 
-		// handle extra helm paths
-		if helm := src.Helm; helm != nil {
-			for _, param := range helm.FileParameters {
-				path := filepath.Join(sourcePath, param.Path)
-				d.addFile(app.Name, path)
-			}
+	d.appsMap[app.Name] = app
 
-			for _, valueFilePath := range helm.ValueFiles {
-				path := filepath.Join(sourcePath, valueFilePath)
-				d.addFile(app.Name, path)
-			}
-		}
+	for _, dir := range dirs {
+		d.addDir(app.Name, dir)
+	}
+
+	for _, file := range files {
+		d.addFile(app.Name, file)
 	}
 }
 
-func getSources(app v1alpha1.Application) []v1alpha1.ApplicationSource {
-	if !app.Spec.HasMultipleSources() {
-		return []v1alpha1.ApplicationSource{*app.Spec.Source}
+// appIndexEntries returns the directories and files inside repoURL that app depends
+// on, and is the single definition of that mapping so that adding and removing an
+// app always touch exactly the same entries.
+func appIndexEntries(app v1alpha1.Application, repoURL string) (dirs []string, files []string) {
+	for _, src := range allSources(app) {
+		if !sourceBelongsToRepo(src.RepoURL, repoURL) {
+			continue
+		}
+
+		dirs = append(dirs, src.Path)
+
+		helm := src.Helm
+		if helm == nil {
+			continue
+		}
+
+		for _, param := range helm.FileParameters {
+			files = append(files, filepath.Join(src.Path, param.Path))
+		}
+
+		for _, valueFile := range helm.ValueFiles {
+			files = append(files, filepath.Join(src.Path, valueFile))
+		}
 	}
 
-	return app.Spec.Sources
+	return dirs, files
+}
+
+// sourceBelongsToRepo reports whether a source, or a resolved value file, lives in
+// the repository an AppDirectory holds. An unset repository on either side imposes no
+// restriction, which keeps a directory built directly, outside VcsToArgoMap, indexing
+// everything it is given.
+func sourceBelongsToRepo(srcRepoURL, repoURL string) bool {
+	if srcRepoURL == "" || repoURL == "" {
+		return true
+	}
+
+	return pkg.AreSameRepos(srcRepoURL, repoURL)
+}
+
+// allSources returns every source of an application, whether it declares one source
+// or many.
+func allSources(app v1alpha1.Application) []v1alpha1.ApplicationSource {
+	if app.Spec.HasMultipleSources() {
+		return app.Spec.Sources
+	}
+
+	if app.Spec.Source == nil {
+		return nil
+	}
+
+	return []v1alpha1.ApplicationSource{*app.Spec.Source}
 }
 
 func (d *AppDirectory) addDir(appName, path string) {
@@ -240,34 +284,32 @@ func (d *AppDirectory) addFile(appName, path string) {
 	d.appFiles[path] = append(d.appFiles[path], appName)
 }
 
-func (d *AppDirectory) RemoveApp(app v1alpha1.Application) {
+// RemoveApp takes app back out of the index for repoURL.
+//
+// It removes exactly the entries AddApp created, because both derive them from
+// appIndexEntries. Removing only the first source's path, as this once did, left an
+// app behind in every other directory and file it had been indexed under, so an
+// update that changed a source path kept matching the old one forever.
+func (d *AppDirectory) RemoveApp(app v1alpha1.Application, repoURL string) {
 	log.Debug().
 		Caller().
 		Str("appName", app.Name).
 		Str("cluster-name", app.Spec.Destination.Name).
 		Str("cluster-server", app.Spec.Destination.Server).
+		Str("repoURL", repoURL).
 		Msg("delete app")
 
 	// remove app from appsMap
 	delete(d.appsMap, app.Name)
 
-	// Clean up app from appDirs
-	sourcePath := getSourcePath(app)
-	d.appDirs[sourcePath] = removeFromSlice[string](d.appDirs[sourcePath], app.Name, func(a, b string) bool { return a == b })
+	dirs, files := appIndexEntries(app, repoURL)
 
-	// Clean up app from appFiles
-	src := app.Spec.GetSource()
-	srcPath := src.Path
-	if helm := src.Helm; helm != nil {
-		for _, param := range helm.FileParameters {
-			path := filepath.Join(srcPath, param.Path)
-			d.appFiles[path] = removeFromSlice[string](d.appFiles[path], app.Name, func(a, b string) bool { return a == b })
-		}
+	for _, dir := range dirs {
+		d.appDirs[dir] = removeFromSlice[string](d.appDirs[dir], app.Name, func(a, b string) bool { return a == b })
+	}
 
-		for _, valueFilePath := range helm.ValueFiles {
-			path := filepath.Join(srcPath, valueFilePath)
-			d.appFiles[path] = removeFromSlice[string](d.appFiles[path], app.Name, func(a, b string) bool { return a == b })
-		}
+	for _, file := range files {
+		d.appFiles[file] = removeFromSlice[string](d.appFiles[file], app.Name, func(a, b string) bool { return a == b })
 	}
 }
 
